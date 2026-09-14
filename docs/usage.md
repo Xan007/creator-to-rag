@@ -18,6 +18,8 @@ EMBED_PROVIDER=gemini
 CRAG_PINECONE_INDEX=creatorrag
 GEMINI_EXTRACTION_MODEL=gemini-3.5-flash
 GEMINI_MAX_CONCURRENT_REQUESTS=1
+GEMINI_VIDEO_OPTIMIZE=true
+GEMINI_VIDEO_MAX_HEIGHT=720
 ```
 
 Optional Groq answers (Llama 3.3 is shut down on free/developer):

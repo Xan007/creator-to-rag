@@ -144,7 +144,9 @@ def _hydrate_one(source, progress: Progress) -> str:
     files = download_with_ytdlp(url, source.id.replace(":", "_"), prefix="hydrate") or []
     try:
         analyzer = GeminiAnalyzer()
-        extracted = analyzer.extract_knowledge(files, source.description or "")
+        extracted = analyzer.extract_knowledge(
+            files, source.description or "", progress=progress
+        )
         indexer = PineconeIndexer()
         post = None
         db = get_session()

@@ -356,9 +356,8 @@ def query_cmd(
         if res.get("sources"):
             console.print("\n[bold yellow]Sources:[/bold yellow]")
             for i, s in enumerate(res["sources"], 1):
-                if s.get("cited", True):
-                    summary_str = f" [dim]({s['summary']})[/dim]" if s.get("summary") else ""
-                    console.print(f" - [Source {i}] @{s['creator']}: {s['url']}{summary_str}")
+                summary_str = f" [dim]({s['summary']})[/dim]" if s.get("summary") else ""
+                console.print(f" - [Source {i}] @{s['creator']}: {s['url']}{summary_str}")
 
         if res.get("artifact"):
             art = res["artifact"]

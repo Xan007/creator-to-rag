@@ -140,7 +140,7 @@ def test_hydrate_sources_downloads_and_reindexes(monkeypatch):
         def __init__(self, *a, **k):
             pass
 
-        def extract_knowledge(self, files, description):
+        def extract_knowledge(self, files, description, **_kwargs):
             captured["files"] = files
             captured["description"] = description
             return "FULL: boil 8 minutes, salt the water"
