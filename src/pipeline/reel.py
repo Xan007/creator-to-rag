@@ -31,6 +31,7 @@ def add_reel(
     *,
     creator: Optional[str] = None,
     group_id: Optional[str] = None,
+    library_id: Optional[str] = None,
     caption_only: bool = False,
     keep_media: bool = False,
     progress: Progress = echo,
@@ -69,7 +70,8 @@ def add_reel(
     db = get_session()
 
     try:
-        for url in urls:
+        total_urls = len(urls)
+        for position, url in enumerate(urls, 1):
             reel_id = None
             downloaded_files: List[Dict[str, str]] = []
             try:
@@ -104,12 +106,14 @@ def add_reel(
                 try:
                     if not caption_only and meta.get("media_items"):
                         downloaded_files = downloader.download_media_items(meta["media_items"], reel_id) or []
+                    if not caption_only:
+                        progress(f"[{position}/{total_urls}] Downloading media for {url}")
                     if not downloaded_files and not caption_only:
                         downloaded_files = download_with_ytdlp(meta["url"], reel_id, prefix="reel") or []
                 except Exception as e:
                     progress(f"Media download failed: {e} - using caption.")
 
-                progress(f"Analyzing content for {reel_id}...")
+                progress(f"[{position}/{total_urls}] Analyzing content for {reel_id}...")
                 if downloaded_files:
                     extracted_text = analyzer.extract_knowledge(downloaded_files, description)
                 else:
@@ -122,6 +126,7 @@ def add_reel(
                     post_type=meta.get("type", "Reel"),
                     description=description,
                     extracted_text=extracted_text,
+                    library_id=library_id,
                 )
 
                 if group_id:

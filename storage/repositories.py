@@ -1,15 +1,21 @@
 import time
+import re
 from typing import List, Optional
 import uuid
 
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 
 from storage.models import (
+    Chunk,
     Group,
     GroupPost,
     GroupShare,
     IGProfile,
+    LibrarySource,
+    Library,
     Post,
+    Source,
     Setting,
     User,
     UserSavedPost,
@@ -56,7 +62,186 @@ def create_user(db: Session, username: str, user_id: Optional[str] = None) -> Us
     db.add(user)
     db.commit()
     db.refresh(user)
+    if not get_library_by_name(db, user.id, "Mi biblioteca"):
+        create_library(db, user.id, "Mi biblioteca", "Biblioteca personal")
     return user
+
+
+def get_library(db: Session, library_id: str) -> Optional[Library]:
+    return db.query(Library).filter(Library.id == library_id).first()
+
+
+def get_library_by_name(db: Session, owner_id: str, name: str) -> Optional[Library]:
+    return db.query(Library).filter(Library.owner_id == owner_id, Library.name == name).first()
+
+
+def slugify_library_name(name: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower().strip()).strip("-")
+    return slug or "library"
+
+
+def get_library_by_slug(db: Session, owner_id: str, slug: str) -> Optional[Library]:
+    return db.query(Library).filter(Library.owner_id == owner_id, Library.slug == slug).first()
+
+
+def resolve_library(db: Session, owner_id: str, identifier: str) -> Optional[Library]:
+    return get_library_by_slug(db, owner_id, identifier) or get_library(db, identifier)
+
+
+def list_libraries(db: Session, owner_id: Optional[str] = None) -> List[Library]:
+    query = db.query(Library)
+    if owner_id:
+        query = query.filter(Library.owner_id == owner_id)
+    return query.order_by(Library.created_at.asc()).all()
+
+
+def create_library(db: Session, owner_id: str, name: str, description: str = "") -> Library:
+    base_slug = slugify_library_name(name)
+    slug = base_slug
+    suffix = 2
+    while get_library_by_slug(db, owner_id, slug):
+        slug = f"{base_slug}-{suffix}"
+        suffix += 1
+    library = Library(
+        id=_new_uuid(),
+        owner_id=owner_id,
+        name=name.strip(),
+        slug=slug,
+        description=description,
+    )
+    db.add(library)
+    db.commit()
+    db.refresh(library)
+    return library
+
+
+def get_source(db: Session, source_id: str) -> Optional[Source]:
+    return db.query(Source).filter(Source.id == source_id).first()
+
+
+def get_source_by_url(db: Session, library_id: str, url: str) -> Optional[Source]:
+    return (
+        db.query(Source)
+        .join(LibrarySource, LibrarySource.source_id == Source.id)
+        .filter(LibrarySource.library_id == library_id, Source.url == url)
+        .first()
+    )
+
+
+def add_source_to_library(db: Session, library_id: str, source_id: str) -> bool:
+    existing = (
+        db.query(LibrarySource)
+        .filter(LibrarySource.library_id == library_id, LibrarySource.source_id == source_id)
+        .first()
+    )
+    if existing:
+        return False
+    db.add(LibrarySource(library_id=library_id, source_id=source_id, added_at=time.time()))
+    if db.bind and db.bind.dialect.name == "sqlite":
+        source = get_source(db, source_id)
+        chunks = db.query(Chunk).filter(Chunk.source_id == source_id).all()
+        if source:
+            for chunk in chunks:
+                db.execute(
+                    text(
+                        "INSERT INTO chunks_fts(chunk_id, library_id, text, title, author, description, url) "
+                        "VALUES (:chunk_id, :library_id, :text, :title, :author, :description, :url)"
+                    ),
+                    {
+                        "chunk_id": chunk.id,
+                        "library_id": library_id,
+                        "text": chunk.text,
+                        "title": source.title or "",
+                        "author": source.author or "",
+                        "description": source.description or "",
+                        "url": source.url or "",
+                    },
+                )
+    db.commit()
+    return True
+
+
+def upsert_source(db: Session, source: Source) -> Source:
+    existing = get_source(db, source.id)
+    if existing:
+        for field in ("library_id", "platform", "content_type", "url", "author", "title",
+                      "description", "extracted_text", "status", "indexed_at"):
+            value = getattr(source, field, None)
+            if field != "library_id" and value not in (None, ""):
+                setattr(existing, field, value)
+        db.commit()
+        db.refresh(existing)
+        if source.library_id:
+            add_source_to_library(db, source.library_id, existing.id)
+        return existing
+    db.add(source)
+    db.commit()
+    db.refresh(source)
+    if source.library_id:
+        add_source_to_library(db, source.library_id, source.id)
+    return source
+
+
+def replace_chunks(db: Session, source_id: str, library_id: str, chunks: List[Chunk]) -> None:
+    db.query(Chunk).filter(Chunk.source_id == source_id).delete()
+    db.add_all(chunks)
+    if str(db.bind.dialect.name) == "sqlite":
+        source = get_source(db, source_id)
+        if source:
+            memberships = [
+                row.library_id
+                for row in db.query(LibrarySource).filter(LibrarySource.source_id == source_id).all()
+            ] or [library_id]
+            for member_library_id in memberships:
+                db.execute(
+                    text("DELETE FROM chunks_fts WHERE chunk_id LIKE :prefix AND library_id = :library_id"),
+                    {"prefix": f"{source_id}:%", "library_id": member_library_id},
+                )
+                for chunk in chunks:
+                    db.execute(
+                        text(
+                            "INSERT INTO chunks_fts(chunk_id, library_id, text, title, author, description, url) "
+                            "VALUES (:chunk_id, :library_id, :text, :title, :author, :description, :url)"
+                        ),
+                        {
+                            "chunk_id": chunk.id,
+                            "library_id": member_library_id,
+                            "text": chunk.text,
+                            "title": source.title or "",
+                            "author": source.author or "",
+                            "description": source.description or "",
+                            "url": source.url or "",
+                        },
+                    )
+    db.commit()
+    try:
+        from src.rag.lexical import LexicalRetriever
+        LexicalRetriever.invalidate(library_id)
+    except ImportError:
+        pass
+
+
+def list_chunks(db: Session, library_id: str, source_ids: Optional[List[str]] = None) -> List[Chunk]:
+    query = (
+        db.query(Chunk)
+        .join(LibrarySource, LibrarySource.source_id == Chunk.source_id)
+        .filter(LibrarySource.library_id == library_id)
+    )
+    if source_ids is not None:
+        if not source_ids:
+            return []
+        query = query.filter(Chunk.source_id.in_(source_ids))
+    return query.order_by(Chunk.source_id, Chunk.ordinal).all()
+
+
+def list_sources(db: Session, library_id: str) -> List[Source]:
+    return (
+        db.query(Source)
+        .join(LibrarySource, LibrarySource.source_id == Source.id)
+        .filter(LibrarySource.library_id == library_id)
+        .order_by(Source.created_at.asc())
+        .all()
+    )
 
 
 
@@ -134,6 +319,8 @@ def upsert_post(db: Session, post: Post) -> Post:
         existing.type = post.type or existing.type
         existing.description = post.description or existing.description
         existing.extracted_knowledge = post.extracted_knowledge or existing.extracted_knowledge
+        existing.library_id = post.library_id or existing.library_id
+        existing.source_id = post.source_id or existing.source_id
         if post.indexed_at is not None:
             existing.indexed_at = post.indexed_at
         db.commit()

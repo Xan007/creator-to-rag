@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import time
 from typing import Any, Dict, List, Optional, Tuple
 from google import genai
 from pinecone import Pinecone
@@ -12,12 +13,13 @@ from src.rag.conversation import (
     normalize_history,
 )
 from src.rag.hybrid import HybridRetriever
+from src.rag.lexical import LexicalRetriever
 
 load_runtime_env()
 
 logger = logging.getLogger(__name__)
 
-INDEX_NAME = "instarag"
+INDEX_NAME = os.getenv("INSTARAG_PINECONE_INDEX", "instarag-v2")
 EMBEDDING_MODEL = "gemini-embedding-001"
 
 _CITATION_RE = re.compile(r"Source\s*(\d+)", re.IGNORECASE)
@@ -84,15 +86,14 @@ def _extract_brief_summary(knowledge: str, caption: str) -> str:
 class QueryEngine:
     def __init__(self):
         pinecone_key = os.getenv("PINECONE_API_KEY")
-        if not pinecone_key:
-            raise ValueError("PINECONE_API_KEY environment variable is not set.")
-        self.pc = Pinecone(api_key=pinecone_key)
-        self.index = self.pc.Index(INDEX_NAME)
+        self.pc = Pinecone(api_key=pinecone_key) if pinecone_key else None
+        self.index = self.pc.Index(INDEX_NAME) if self.pc else None
 
         self.embed_provider = EmbeddingFactory.get_provider()
         self.llm = LLMClientFactory.get_client(stage="rag")
         self.rag_model = os.getenv("RAG_MODEL")
         self.hybrid_retriever = HybridRetriever()
+        self.lexical_retriever = LexicalRetriever()
 
     def _get_embedding(self, text: str) -> Optional[List[float]]:
         try:
@@ -105,31 +106,48 @@ class QueryEngine:
     def build_context(matches: List[Dict[str, Any]], min_score: float) -> tuple:
         context_parts = []
         sources = []
-        seen_urls = set()
+        grouped: Dict[str, List[Dict[str, Any]]] = {}
         dropped = 0
         for match in matches:
             meta = match.get("metadata", {})
             post_url = meta.get("url", "Unknown URL")
-            post_creator = meta.get("creator_username", "Unknown")
-            knowledge = meta.get("extracted_knowledge", "")
-            caption = meta.get("original_description", "")
-
-            if post_url in seen_urls:
-                continue
-            seen_urls.add(post_url)
-
             score = match.get("score")
             if min_score is not None and score is not None and score < min_score:
                 dropped += 1
                 continue
+            grouped.setdefault(post_url, []).append(match)
+
+        for post_url, source_matches in grouped.items():
+            source_matches = source_matches[:2]
+            meta = source_matches[0].get("metadata", {})
+            post_creator = meta.get("creator_username") or meta.get("author", "Unknown")
+            source_title = meta.get("title", "")
+            knowledge = "\n\n".join(
+                m.get("metadata", {}).get("extracted_knowledge", "")
+                for m in source_matches
+                if m.get("metadata", {}).get("extracted_knowledge")
+            )
+            caption = meta.get("original_description", "")
+            score = max((m.get("score") or 0.0 for m in source_matches), default=None)
 
             summary = _extract_brief_summary(knowledge, caption)
-            part = f"[Source {len(sources) + 1}]\nCreator: @{post_creator}\nPost URL: {post_url}\n"
+            part = f"[Source {len(sources) + 1}]\nCreator: @{post_creator}\nSource URL: {post_url}\n"
+            if source_title:
+                part += f"Title: {source_title}\n"
             if caption:
                 part += f"Caption: {caption[:MAX_CAPTION_CHARS]}\n"
             part += f"Knowledge:\n{knowledge}\n"
             context_parts.append(part)
-            sources.append({"creator": post_creator, "url": post_url, "score": score, "summary": summary})
+            sources.append({
+                "creator": post_creator,
+                "author": post_creator,
+                "title": source_title,
+                "url": post_url,
+                "platform": meta.get("platform", ""),
+                "source_id": meta.get("source_id") or meta.get("post_id"),
+                "score": score,
+                "summary": summary,
+            })
 
         full_context = "\n---\n".join(context_parts)
         return full_context, sources, dropped
@@ -166,6 +184,15 @@ User Question:
         cited = set(_CITATION_RE.findall(answer))
         return [{**src, "cited": str(i) in cited} for i, src in enumerate(sources, start=1)]
 
+    @staticmethod
+    def sanitize_citations(answer: str, source_count: int) -> str:
+        """Remove references to source numbers that were not supplied."""
+        def replace(match: re.Match) -> str:
+            number = int(match.group(1))
+            return match.group(0) if 1 <= number <= source_count else ""
+
+        return re.sub(r"\[Source\s*(\d+)\]", replace, answer or "", flags=re.IGNORECASE)
+
     def _condense_question(self, question: str, pairs: List[Tuple[str, str]]) -> str:
         if not pairs:
             return question.strip()
@@ -195,6 +222,7 @@ Standalone Question:"""
         self,
         question: str,
         creator: Optional[str] = None,
+        library_id: Optional[str] = None,
         post_ids: Optional[List[str]] = None,
         top_k: int = DEFAULT_TOP_K,
         min_score: float = DEFAULT_MIN_SCORE,
@@ -206,10 +234,13 @@ Standalone Question:"""
             raise ValueError(f"mode must be one of {MODES}")
 
         pairs = normalize_history(history)
+        timings: Dict[str, float] = {}
         search_query = self._condense_question(question, pairs)
 
         filter_dict: Optional[Dict[str, Any]] = None
-        if post_ids is not None:
+        if library_id:
+            filter_dict = {"library_id": {"$eq": library_id}}
+        elif post_ids is not None:
             if not post_ids:
                 return {
                     "answer": "Este grupo todavía no tiene posts indexados.",
@@ -220,9 +251,12 @@ Standalone Question:"""
         elif creator:
             filter_dict = {"creator_username": {"$eq": creator}}
 
+        started = time.perf_counter()
         query_vector = self._get_embedding(search_query)
+        timings["embedding_ms"] = round((time.perf_counter() - started) * 1000, 2)
         dense_matches = []
-        if query_vector is not None:
+        started = time.perf_counter()
+        if query_vector is not None and self.index is not None:
             try:
                 raw_k = max(top_k * 2, 10)
                 results = self.index.query(
@@ -238,12 +272,20 @@ Standalone Question:"""
                     logger.info("Vector dimension (%d) differs from Pinecone index; relying on local BM25 retrieval.", len(query_vector))
                 else:
                     logger.warning("Pinecone query notice: %s; using local BM25 retrieval.", e)
+        timings["dense_ms"] = round((time.perf_counter() - started) * 1000, 2)
 
 
+
+        local_documents: List[Dict[str, Any]] = []
+        if library_id:
+            started = time.perf_counter()
+            local_documents = self.lexical_retriever.retrieve(search_query, library_id, top_k=max(top_k * 3, 20))
+            timings["lexical_ms"] = round((time.perf_counter() - started) * 1000, 2)
 
         hybrid_matches = self.hybrid_retriever.retrieve(
             query=search_query,
             pinecone_matches=dense_matches,
+            local_documents=local_documents,
             creator=creator,
             post_ids=post_ids,
             top_k=top_k,
@@ -254,6 +296,7 @@ Standalone Question:"""
                 "answer": "No encontré posts relevantes en la base de datos para responder a tu consulta.",
                 "sources": [],
                 "mode": mode,
+                "timings_ms": timings,
             }
             if pairs:
                 response["standalone_question"] = search_query
@@ -266,6 +309,7 @@ Standalone Question:"""
                 "sources": [],
                 "mode": mode,
                 "low_confidence": True,
+                "timings_ms": timings,
                 **({"standalone_question": search_query} if pairs else {}),
             }
 
@@ -278,16 +322,20 @@ Standalone Question:"""
         )
 
         try:
+            started = time.perf_counter()
             answer_text = self.llm.generate(
                 messages=[{"role": "user", "content": prompt}],
                 model=self.rag_model,
                 temperature=0.3,
             )
+            answer_text = self.sanitize_citations(answer_text, len(sources))
+            timings["generation_ms"] = round((time.perf_counter() - started) * 1000, 2)
             result = {
                 "answer": answer_text,
                 "sources": self.annotate_citations(answer_text, sources),
                 "mode": mode,
                 "artifact_type": artifact_type,
+                "timings_ms": timings,
             }
             if pairs:
                 result["standalone_question"] = search_query

@@ -4,16 +4,29 @@ import time
 from typing import Dict, List, Optional
 from google import genai
 from config.env import load_runtime_env
+from src.llm.gemini_limits import GEMINI_REQUEST_LIMIT
 
 load_runtime_env()
 
 logger = logging.getLogger(__name__)
 
-FALLBACK_MODELS = [
-    "gemini-3.5-flash-lite",
-    "gemini-3.7-flash",
-    "gemini-3.6-flash",
-]
+DEFAULT_EXTRACTION_MODEL = "gemini-3.5-flash"
+
+
+def extraction_models() -> List[str]:
+    primary = os.getenv("GEMINI_EXTRACTION_MODEL", DEFAULT_EXTRACTION_MODEL).strip()
+    primary = primary or DEFAULT_EXTRACTION_MODEL
+    fallback = [
+        value.strip()
+        for value in os.getenv("GEMINI_EXTRACTION_FALLBACK_MODELS", "").split(",")
+        if value.strip()
+    ]
+    fallback.extend(["gemini-3.5-flash-lite", "gemini-3.6-flash"])
+    # Migrate the model used by older local .env files automatically. Gemini
+    # rejects this model for new accounts instead of returning a normal 404.
+    if primary in {"gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"}:
+        fallback.append(DEFAULT_EXTRACTION_MODEL)
+    return list(dict.fromkeys([primary, *fallback]))
 
 EXTRACTION_PROMPT_TEMPLATE = """
 You are an expert knowledge extractor building a permanent AI knowledge base from creator content.
@@ -90,11 +103,12 @@ class GeminiAnalyzer:
             contents = uploaded_files + [prompt] if uploaded_files else [prompt]
 
             last_error = None
-            for model_name in FALLBACK_MODELS:
-                for _ in range(2):
+            for model_name in extraction_models():
+                for attempt in range(4):
                     try:
                         chat = self.client.chats.create(model=model_name)
-                        response = chat.send_message(contents)
+                        with GEMINI_REQUEST_LIMIT:
+                            response = chat.send_message(contents)
                         return response.text.strip()
                     except Exception as e:
                         last_error = e
@@ -102,10 +116,25 @@ class GeminiAnalyzer:
                         if "503" in err_str or "UNAVAILABLE" in err_str:
                             logger.info("Model %s unavailable. Trying next model...", model_name)
                             break
+                        if "404" in err_str or "NOT_FOUND" in err_str:
+                            logger.info("Model %s not found. Trying next model...", model_name)
+                            break
                         if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-                            logger.info("Rate limit on %s. Waiting 10s...", model_name)
-                            time.sleep(10)
+                            if attempt < 3:
+                                wait_seconds = min(30, 5 * (2 ** attempt))
+                                logger.info(
+                                    "Rate limit on %s. Retrying in %ss (%d/4)...",
+                                    model_name,
+                                    wait_seconds,
+                                    attempt + 1,
+                                )
+                                time.sleep(wait_seconds)
+                            else:
+                                logger.info("Rate limit persists on %s. Trying next model...", model_name)
+                                break
                         else:
+                            # Authentication, invalid model, and malformed requests are
+                            # deterministic failures; retrying them only adds latency.
                             break
 
             raise RuntimeError(f"All fallback models failed for knowledge extraction: {last_error}")

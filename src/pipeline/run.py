@@ -17,6 +17,7 @@ def scrape_profile(
     newer_than: Optional[str] = None,
     max_posts: int = 200,
     analysis_mode: str = "gemini",
+    library_id: Optional[str] = None,
     keep_media: bool = False,
     interests: Optional[str] = None,
     progress: Progress = echo,
@@ -35,16 +36,11 @@ def scrape_profile(
     if not profile:
         profile = IGProfileInfo(username=username)
 
-    effective_interests = (interests if interests is not None else profile.interests or "").strip()
-    if interests is not None and interests != profile.interests:
-        profile.interests = interests
-        save_ig_profile(profile)
-
     progress(f"Scraping @{username} — {run_iso[:19]}Z")
     progress(
         f"  Mode: {analysis_mode} | Max posts: {max_posts}"
         + (f" | newer than: {newer_than}" if newer_than else "")
-        + (f" | interests filter: '{effective_interests}'" if effective_interests else "")
+        + " | indexing all selected content"
     )
     if profile.last_scraped_at:
         dt = datetime.fromtimestamp(profile.last_scraped_at, tz=timezone.utc)
@@ -96,45 +92,25 @@ def scrape_profile(
                 "message": "No new posts found — profile is up to date.",
             }
 
-        matching_ids: Optional[set] = None
-        if effective_interests:
-            from src.filter.interest_filter import InterestFilter
-            progress(f"Evaluating {len(all_posts)} post(s) against interests: '{effective_interests}'...")
-            try:
-                interest_filter = InterestFilter()
-                matching_ids = interest_filter.filter_batch(all_posts, effective_interests)
-                progress(
-                    f"  {len(matching_ids)}/{len(all_posts)} post(s) match interests (downloading media & full analysis). "
-                    f"{len(all_posts) - len(matching_ids)} will be indexed from description only."
-                )
-            except Exception as fe:
-                progress(f"  [Warning] Interests filter evaluation failed: {fe}. Proceeding with full media download for all posts.")
-                matching_ids = None
-
-        def process_post_task(post: Dict[str, Any]):
+        def process_post_task(post_number: int, post: Dict[str, Any]):
             post_id = post["id"]
             post_url = post["url"]
             post_type = post.get("type", "Post")
             description = post.get("description", "")
             media_items = post.get("media_items", [])
 
-            should_download_media = (matching_ids is None) or (post_id in matching_ids)
-
             downloaded = []
             audio_sources = []
             try:
-                if should_download_media:
-                    progress(f"  Starting download (matches interests): {post_type} {post_url}")
-                    if is_whisper:
-                        video_urls = [m["url"] for m in media_items if m.get("type") == "video"]
-                        audio_sources = [post["url"]] if post.get("url") and video_urls else []
-                        audio_sources += [u for u in video_urls if u != post.get("url")]
-                    elif media_items:
-                        downloaded = downloader.download_media_items(media_items, post_id) or []
-                else:
-                    progress(f"  Skipping video download (no interest match): {post_type} {post_url} — indexing description only.")
+                progress(f"  [{post_number}/{len(all_posts)}] Downloading: {post_type} {post_url}")
+                if is_whisper:
+                    video_urls = [m["url"] for m in media_items if m.get("type") == "video"]
+                    audio_sources = [post["url"]] if post.get("url") and video_urls else []
+                    audio_sources += [u for u in video_urls if u != post.get("url")]
+                elif media_items:
+                    downloaded = downloader.download_media_items(media_items, post_id) or []
 
-                progress(f"  Analyzing content for {post_id}...")
+                progress(f"  [{post_number}/{len(all_posts)}] Analyzing content for {post_id}...")
                 if is_whisper:
                     extracted = analyzer.extract_knowledge(
                         downloaded, description, video_urls=audio_sources
@@ -149,6 +125,7 @@ def scrape_profile(
                     post_type=post_type,
                     description=description,
                     extracted_text=extracted,
+                    library_id=library_id,
                 )
                 progress(f"  ✓ Indexed {post_id}")
                 return "ok", post_id, None
@@ -161,7 +138,10 @@ def scrape_profile(
 
         progress(f"Processing {len(all_posts)} post(s) concurrently...")
         with ThreadPoolExecutor(max_workers=3) as executor:
-            futures = {executor.submit(process_post_task, p): p for p in all_posts}
+            futures = {
+                executor.submit(process_post_task, post_number, post): post
+                for post_number, post in enumerate(all_posts, 1)
+            }
             for future in as_completed(futures):
                 status, pid, err = future.result()
                 if status == "ok":

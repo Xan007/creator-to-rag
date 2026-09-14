@@ -27,5 +27,7 @@ class FastEmbedProvider:
 
     def get_embedding(self, text: str, task_type: str = "query") -> List[float]:
         # Prefix query if useful, or embed directly
-        embeddings = list(self.model.embed([text]))
-        return embeddings[0].tolist()
+        return self.get_embeddings([text], task_type=task_type)[0]
+
+    def get_embeddings(self, texts: List[str], task_type: str = "document") -> List[List[float]]:
+        return [embedding.tolist() for embedding in self.model.embed(texts)]

@@ -1,4 +1,5 @@
 import os
+import re
 from pathlib import Path
 from typing import Generator
 
@@ -70,6 +71,53 @@ def _migrate(engine) -> None:
         if "user_saved_states" in tables:
             add_col_if_missing("user_saved_states", "processed_ids", "JSON DEFAULT '[]'")
             add_col_if_missing("user_saved_states", "failed_ids", "JSON DEFAULT '[]'")
+        if "posts" in tables:
+            add_col_if_missing("posts", "library_id", "VARCHAR")
+            add_col_if_missing("posts", "source_id", "VARCHAR")
+        if "sources" in tables:
+            add_col_if_missing("sources", "content_hash", "VARCHAR DEFAULT ''")
+            add_col_if_missing("sources", "chunk_version", "VARCHAR DEFAULT 'v1'")
+            add_col_if_missing("sources", "embedding_provider", "VARCHAR DEFAULT ''")
+            add_col_if_missing("sources", "embedding_model", "VARCHAR DEFAULT ''")
+            add_col_if_missing("sources", "embedding_dimension", "INTEGER")
+        if "chunks" in tables:
+            add_col_if_missing("chunks", "chunk_version", "VARCHAR DEFAULT 'v1'")
+        if "libraries" in tables:
+            add_col_if_missing("libraries", "slug", "VARCHAR DEFAULT ''")
+            rows = conn.execute(text("SELECT id, name, slug FROM libraries")).fetchall()
+            for library_id, name, slug in rows:
+                if not slug:
+                    value = re.sub(r"[^a-z0-9]+", "-", (name or "").lower()).strip("-")
+                    value = value or f"library-{str(library_id)[:8]}"
+                    conn.execute(
+                        text("UPDATE libraries SET slug = :slug WHERE id = :id"),
+                        {"slug": value, "id": library_id},
+                    )
+        if "library_sources" in tables and "sources" in tables:
+            conn.execute(
+                text(
+                    "INSERT OR IGNORE INTO library_sources (library_id, source_id, added_at) "
+                    "SELECT library_id, id, strftime('%s','now') FROM sources "
+                    "WHERE library_id IS NOT NULL"
+                )
+            )
+        conn.execute(
+            text(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5("
+                "chunk_id UNINDEXED, library_id UNINDEXED, text, title, author, "
+                "description, url)"
+            )
+        )
+        count = conn.execute(text("SELECT COUNT(*) FROM chunks_fts")).scalar_one()
+        if count == 0 and "chunks" in tables:
+            conn.execute(
+                text(
+                    "INSERT INTO chunks_fts(chunk_id, library_id, text, title, author, description, url) "
+                    "SELECT c.id, c.library_id, c.text, COALESCE(s.title,''), "
+                    "COALESCE(s.author,''), COALESCE(s.description,''), COALESCE(s.url,'') "
+                    "FROM chunks c LEFT JOIN sources s ON s.id = c.source_id"
+                )
+            )
 
         conn.commit()
 

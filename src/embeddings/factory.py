@@ -67,4 +67,23 @@ class FallbackEmbeddingProvider:
 class EmbeddingFactory:
     @staticmethod
     def get_provider(provider_type: Optional[str] = None) -> BaseEmbeddingProvider:
-        return FallbackEmbeddingProvider(primary=provider_type)
+        """Return one pinned provider; never switch dimensions mid-index."""
+        requested = (provider_type or os.getenv("EMBED_PROVIDER", "auto")).lower()
+        if requested == "auto":
+            if os.getenv("JINA_API_KEY"):
+                requested = "jina"
+            elif os.getenv("GEMINI_API_KEY"):
+                requested = "gemini"
+            else:
+                requested = "fastembed"
+        if requested == "jina":
+            if not os.getenv("JINA_API_KEY"):
+                raise RuntimeError("EMBED_PROVIDER=jina requires JINA_API_KEY.")
+            return JinaEmbeddingProvider()
+        if requested == "gemini":
+            if not os.getenv("GEMINI_API_KEY"):
+                raise RuntimeError("EMBED_PROVIDER=gemini requires GEMINI_API_KEY.")
+            return GeminiEmbeddingProvider()
+        if requested == "fastembed":
+            return FastEmbedProvider()
+        raise ValueError("EMBED_PROVIDER must be auto, jina, gemini, or fastembed.")

@@ -3,13 +3,14 @@ import os
 import time
 from typing import Dict, List, Optional
 from google import genai
+from src.llm.gemini_limits import GEMINI_REQUEST_LIMIT
 
 logger = logging.getLogger(__name__)
 
 FALLBACK_MODELS = [
-    "gemini-2.5-flash",
-    "gemini-2.0-flash",
-    "gemini-1.5-flash",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.6-flash",
     "gemini-flash-lite-latest",
 ]
 
@@ -47,12 +48,13 @@ class GeminiLLMClient:
         for mod in models_to_try:
             if not mod:
                 continue
-            for attempt in range(2):
+            for attempt in range(4):
                 try:
-                    response = self.client.models.generate_content(
-                        model=mod,
-                        contents=full_prompt,
-                    )
+                    with GEMINI_REQUEST_LIMIT:
+                        response = self.client.models.generate_content(
+                            model=mod,
+                            contents=full_prompt,
+                        )
                     return response.text.strip()
                 except Exception as e:
                     last_error = e
@@ -64,8 +66,18 @@ class GeminiLLMClient:
                         logger.info("Gemini model %s unavailable (503). Trying next model...", mod)
                         break
                     elif "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-                        logger.info("Rate limit on %s (429). Trying next model...", mod)
-                        break
+                        if attempt < 3:
+                            wait_seconds = min(30, 5 * (2 ** attempt))
+                            logger.info(
+                                "Rate limit on %s (429). Retrying in %ss (%d/4)...",
+                                mod,
+                                wait_seconds,
+                                attempt + 1,
+                            )
+                            time.sleep(wait_seconds)
+                        else:
+                            logger.info("Rate limit persists on %s (429). Trying next model...", mod)
+                            break
                     else:
                         logger.info("Error on model %s: %s. Trying next model...", mod, e)
                         break

@@ -18,6 +18,72 @@ class User(Base):
     created_at = Column(Float, default=time.time)
 
 
+class Library(Base):
+    """A user's curated knowledge space, independent of source platform."""
+
+    __tablename__ = "libraries"
+
+    id = Column(String, primary_key=True)
+    owner_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    name = Column(String, nullable=False)
+    slug = Column(String, nullable=False)
+    description = Column(Text, default="")
+    created_at = Column(Float, default=time.time)
+
+    __table_args__ = (
+        UniqueConstraint("owner_id", "name", name="uq_library_owner_name"),
+    )
+
+
+class Source(Base):
+    """A canonical piece of creator content (post, video, PDF, lesson, etc.)."""
+
+    __tablename__ = "sources"
+
+    id = Column(String, primary_key=True)
+    library_id = Column(String, ForeignKey("libraries.id"), nullable=False, index=True)
+    platform = Column(String, nullable=False, default="url")
+    content_type = Column(String, nullable=False, default="video")
+    url = Column(String, nullable=False, default="")
+    author = Column(String, default="")
+    title = Column(String, default="")
+    description = Column(Text, default="")
+    extracted_text = Column(Text, default="")
+    status = Column(String, default="indexed")
+    content_hash = Column(String, default="")
+    chunk_version = Column(String, default="v1")
+    embedding_provider = Column(String, default="")
+    embedding_model = Column(String, default="")
+    embedding_dimension = Column(Integer, nullable=True)
+    created_at = Column(Float, default=time.time)
+    indexed_at = Column(Float, nullable=True)
+
+
+class LibrarySource(Base):
+    """Many-to-many membership between canonical sources and libraries."""
+
+    __tablename__ = "library_sources"
+
+    library_id = Column(String, ForeignKey("libraries.id"), primary_key=True)
+    source_id = Column(String, ForeignKey("sources.id"), primary_key=True)
+    added_at = Column(Float, default=time.time)
+
+
+class Chunk(Base):
+    """Retrieval unit belonging to a source."""
+
+    __tablename__ = "chunks"
+
+    id = Column(String, primary_key=True)
+    source_id = Column(String, ForeignKey("sources.id"), nullable=False, index=True)
+    library_id = Column(String, ForeignKey("libraries.id"), nullable=False, index=True)
+    ordinal = Column(Integer, nullable=False, default=0)
+    text = Column(Text, nullable=False, default="")
+    token_count = Column(Integer, default=0)
+    chunk_version = Column(String, default="v1")
+    created_at = Column(Float, default=time.time)
+
+
 class IGProfile(Base):
     __tablename__ = "ig_profiles"
 
@@ -46,6 +112,8 @@ class Post(Base):
     description = Column(Text, default="")
     extracted_knowledge = Column(Text, default="")
     indexed_at = Column(Float, nullable=True)
+    library_id = Column(String, nullable=True, index=True)
+    source_id = Column(String, nullable=True, index=True)
 
 
 ProcessedPost = Post

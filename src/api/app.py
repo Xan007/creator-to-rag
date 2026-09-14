@@ -52,9 +52,9 @@ from config.users import (
 from src.api.jobs import manager
 
 app = FastAPI(
-    title="InstaRAG API",
-    description="Extract knowledge from Instagram profiles and saved posts into a vector database for RAG.",
-    version="0.2.0",
+    title="Creator Knowledge Library API",
+    description="Build source-scoped creator knowledge libraries and query them with grounded RAG.",
+    version="0.3.0",
 )
 
 _cors_origins = [o.strip() for o in os.getenv("INSTARAG_CORS_ORIGINS", "").split(",") if o.strip()]
@@ -91,6 +91,7 @@ class ProfilePatch(BaseModel):
 
 class RunIn(BaseModel):
     username: str
+    library_id: Optional[str] = None
     newer_than: Optional[str] = None
     keep_media: bool = False
 
@@ -124,6 +125,8 @@ class ChatTurn(BaseModel):
 
 class QueryIn(BaseModel):
     question: str
+    library: Optional[str] = None
+    library_id: Optional[str] = None
     creator: Optional[str] = None
     group_name: Optional[str] = None
     user_id: Optional[str] = None
@@ -156,6 +159,26 @@ class GroupPostIn(BaseModel):
 class GroupShareIn(BaseModel):
     target_username: Optional[str] = None
     target_user_id: Optional[str] = None
+
+
+class LibraryIn(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    description: str = ""
+    user_id: Optional[str] = None
+    username: Optional[str] = None
+
+
+class LibrarySourceIn(BaseModel):
+    url: Optional[str] = None
+    urls: Optional[List[str]] = None
+    caption_only: bool = False
+    keep_media: bool = False
+
+    def resolved_urls(self) -> List[str]:
+        values = list(self.urls or [])
+        if self.url:
+            values.append(self.url)
+        return [value.strip() for value in values if value and value.strip()]
 
 
 async def get_current_user(
@@ -216,6 +239,60 @@ def _resolve_api_user(
     raise HTTPException(
         status_code=400,
         detail="User not specified and no default user found. Provide 'X-User-Id' header, 'user_id', or 'username'.",
+    )
+
+
+@app.get("/libraries", tags=["libraries"])
+def get_libraries(
+    user_id: Optional[str] = None,
+    username: Optional[str] = None,
+    current_user: Optional[UserInfo] = Depends(get_current_user),
+    _: None = Depends(require_api_key),
+) -> List[Dict[str, Any]]:
+    user = _resolve_api_user(user_id=user_id, username=username, current_user=current_user)
+    from src.pipeline import list_libraries
+    return list_libraries(user.id)
+
+
+@app.post("/libraries", status_code=201, tags=["libraries"])
+def create_library_endpoint(
+    body: LibraryIn,
+    current_user: Optional[UserInfo] = Depends(get_current_user),
+    _: None = Depends(require_api_key),
+) -> Dict[str, Any]:
+    user = _resolve_api_user(user_id=body.user_id, username=body.username, current_user=current_user)
+    from src.pipeline import create_library
+    try:
+        return create_library(user.id, body.name, body.description)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.post("/libraries/{library_id}/sources", status_code=202, tags=["libraries"])
+def add_library_sources(
+    library_id: str,
+    body: LibrarySourceIn,
+    current_user: Optional[UserInfo] = Depends(get_current_user),
+    _: None = Depends(require_api_key),
+) -> JSONResponse:
+    urls = body.resolved_urls()
+    if not urls:
+        raise HTTPException(status_code=422, detail="Provide 'url' or 'urls'.")
+    try:
+        user = _resolve_api_user(current_user=current_user)
+        from src.pipeline import resolve_library
+        resolved_library_id = resolve_library(user.id, library_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    from src.pipeline import ingest_urls
+    return _submit(
+        "library-ingest",
+        ingest_urls,
+        library_id=resolved_library_id,
+        owner_id=user.id,
+        urls=urls,
+        caption_only=body.caption_only,
+        keep_media=body.keep_media,
     )
 
 
@@ -530,6 +607,7 @@ def job_run(body: RunIn, _: None = Depends(require_api_key)) -> JSONResponse:
         "run",
         run_profile,
         username=body.username,
+        library_id=body.library_id,
         newer_than=body.newer_than,
         keep_media=body.keep_media,
     )
@@ -751,6 +829,15 @@ def query(
             "mode": body.mode,
             "history": history_dicts,
         }
+        library_identifier = body.library or body.library_id
+        if library_identifier:
+            user = _resolve_api_user(current_user=current_user)
+            from src.pipeline import resolve_library
+            try:
+                kwargs["library_id"] = resolve_library(user.id, library_identifier)
+            except ValueError as exc:
+                raise HTTPException(status_code=404, detail=str(exc))
+            kwargs["user_id"] = user.id
         if body.group_name:
             kwargs["group_name"] = body.group_name
             resolved_uid = body.user_id or (current_user.id if current_user else None)
@@ -766,6 +853,8 @@ def query(
             body.creator,
             **kwargs,
         )
+    except HTTPException:
+        raise
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
