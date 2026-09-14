@@ -86,6 +86,7 @@ class PineconeIndexer:
         description: str,
         extracted_text: str,
         library_id: Optional[str] = None,
+        ingest_status: str = "full_indexed",
     ) -> None:
         from storage.db import get_session
         from storage.models import Chunk, Post, Source
@@ -122,6 +123,7 @@ class PineconeIndexer:
                         description=description,
                         extracted_text=extracted_text,
                         status="indexed",
+                        ingest_status=ingest_status,
                         indexed_at=indexed_at,
                     ),
                 )
@@ -164,6 +166,7 @@ class PineconeIndexer:
             "type": post_type,
             "original_description": description[:MAX_CAPTION_CHARS],
             "extracted_knowledge": extracted_text[:MAX_KNOWLEDGE_CHARS],
+            "ingest_status": ingest_status,
         }
         if library_id:
             meta.update({
@@ -186,6 +189,7 @@ class PineconeIndexer:
         title: str,
         description: str,
         extracted_text: str,
+        ingest_status: str = "full_indexed",
     ) -> int:
         """Persist and index a source as independently retrievable chunks."""
         from storage.db import get_session
@@ -211,6 +215,7 @@ class PineconeIndexer:
                     description=description,
                     extracted_text=extracted_text,
                     status="pending",
+                    ingest_status=ingest_status,
                     content_hash=content_hash,
                     chunk_version=CHUNK_VERSION,
                     embedding_provider=self.embed_provider.name,
@@ -263,6 +268,7 @@ class PineconeIndexer:
                         "embedding_dimension": self.embed_provider.dimension,
                         "extracted_knowledge": piece[:MAX_KNOWLEDGE_CHARS],
                         "original_description": description[:MAX_CAPTION_CHARS],
+                        "ingest_status": ingest_status,
                     },
                 }
             )

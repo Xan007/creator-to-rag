@@ -62,6 +62,7 @@ def ingest_urls(
     owner_id: Optional[str] = None,
     caption_only: bool = False,
     keep_media: bool = False,
+    full_media: bool = False,
     progress: Progress = echo,
 ) -> Dict[str, Any]:
     """Index arbitrary public videos using one source pipeline."""
@@ -104,27 +105,39 @@ def ingest_urls(
             try:
                 existing = repo.get_source_by_url(db, library_id, source.url)
                 if existing and existing.status == "indexed":
-                    progress(f"[{position}/{total_urls}] Skipping already indexed source: {url}")
-                    return {
-                        "added": [{
-                            "source_id": existing.id,
-                            "url": url,
-                            "platform": source.platform,
-                            "chunks": 0,
-                            "already_indexed": True,
-                        }],
-                        "failed": [],
-                    }
+                    already_full = existing.ingest_status != "caption_indexed"
+                    if already_full or not full_media:
+                        progress(f"[{position}/{total_urls}] Skipping already indexed source: {url}")
+                        return {
+                            "added": [{
+                                "source_id": existing.id,
+                                "url": url,
+                                "platform": source.platform,
+                                "chunks": 0,
+                                "already_indexed": True,
+                            }],
+                            "failed": [],
+                        }
             finally:
                 db.close()
-            progress(f"[{position}/{total_urls}] Downloading {source.platform} source: {url}")
-            if not caption_only:
+            from src.analyzer.caption_triage import resolve_ingest_plan
+
+            should_download, ingest_status = resolve_ingest_plan(
+                description=source.description or "",
+                caption_only=caption_only,
+                full_media=full_media,
+                platform=source.platform,
+            )
+            if should_download:
+                progress(f"[{position}/{total_urls}] Downloading {source.platform} source: {url}")
                 files = download_with_ytdlp(url, sid, prefix=source.platform) or []
+            else:
+                progress(f"[{position}/{total_urls}] Caption-only index {source.platform} source: {url}")
             progress(f"[{position}/{total_urls}] Analyzing {source.platform} source: {url}")
             if files and analyzer:
                 extracted = analyzer.extract_knowledge(files, source.description)
             else:
-                extracted = source.description
+                extracted = analyzer.extract_knowledge([], source.description) if analyzer else source.description
             chunks = indexer.index_source(
                 source_id=sid,
                 library_id=library_id,
@@ -134,6 +147,7 @@ def ingest_urls(
                 title=source.title,
                 description=source.description,
                 extracted_text=extracted,
+                ingest_status=ingest_status,
             )
             return {
                 "added": [{"source_id": sid, "url": url, "platform": source.platform, "chunks": chunks}],
@@ -154,6 +168,7 @@ def ingest_urls(
                         owner_id=owner_id,
                         caption_only=caption_only,
                         keep_media=keep_media,
+                        full_media=full_media,
                         progress=progress,
                     )
                     return nested

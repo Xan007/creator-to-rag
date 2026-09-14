@@ -66,6 +66,7 @@ def process_saved(
     *,
     limit: Optional[int] = None,
     caption_only: bool = False,
+    full_media: bool = False,
     workers: int = 4,
     progress: Progress = echo,
 ) -> Dict[str, Any]:
@@ -81,6 +82,19 @@ def process_saved(
         raise ValueError("No saved posts imported for this user. Run 'saved import' first.")
 
     pending = [p for p in saved_posts if not p.indexed_at or not p.extracted_knowledge]
+    if full_media:
+        caption_pending = []
+        db = get_session()
+        try:
+            for post in saved_posts:
+                if post in pending:
+                    continue
+                source = repo.get_source(db, post.source_id) if post.source_id else None
+                if source and source.ingest_status == "caption_indexed":
+                    caption_pending.append(post)
+        finally:
+            db.close()
+        pending = pending + caption_pending
     already_indexed = len(saved_posts) - len(pending)
 
     progress(f"User saved posts: {len(saved_posts)} total | Already indexed: {already_indexed} | Pending extraction: {len(pending)}")
@@ -99,12 +113,22 @@ def process_saved(
         description = post.description or ""
         media_files = []
         try:
-            if not caption_only and post.url:
+            from src.analyzer.caption_triage import resolve_ingest_plan
+
+            should_download, ingest_status = resolve_ingest_plan(
+                description=description,
+                caption_only=caption_only,
+                full_media=full_media,
+                platform="instagram",
+            )
+            if should_download and post.url:
                 progress(f"[{position}/{len(pending)}] Downloading saved post {pid}")
                 try:
                     media_files = download_with_ytdlp(post.url, pid) or []
                 except Exception as e:
                     progress(f"yt-dlp failed for {pid}: {e}")
+            elif not should_download:
+                progress(f"[{position}/{len(pending)}] Caption-only index saved post {pid}")
 
             if media_files:
                 progress(f"[{position}/{len(pending)}] Analyzing saved post {pid}")
@@ -122,6 +146,7 @@ def process_saved(
                 post_type=post.type or "Post",
                 description=description,
                 extracted_text=extracted_text,
+                ingest_status=ingest_status,
             )
             return "ok", pid, None
         except Exception as e:

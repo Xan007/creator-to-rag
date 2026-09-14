@@ -302,6 +302,24 @@ Standalone Question:"""
                 response["standalone_question"] = search_query
             return response
 
+        hydrated_ids: List[str] = []
+        hydrate_on_query = os.getenv("HYDRATE_ON_QUERY", "true").lower() in ("true", "1", "yes")
+        if hydrate_on_query:
+            from src.pipeline.hydrate import (
+                caption_indexed_ids_from_matches,
+                hydrate_sources,
+                overlay_hydrated_knowledge,
+            )
+
+            to_hydrate = caption_indexed_ids_from_matches(hybrid_matches, library_id=library_id)
+            if to_hydrate:
+                started = time.perf_counter()
+                hydrated = hydrate_sources(to_hydrate, library_id=library_id)
+                timings["hydrate_ms"] = round((time.perf_counter() - started) * 1000, 2)
+                hydrated_ids = list(hydrated.keys())
+                if hydrated:
+                    hybrid_matches = overlay_hydrated_knowledge(hybrid_matches, hydrated)
+
         context, sources, _dropped = self.build_context(hybrid_matches, min_score=min_score)
         if not context:
             return {
@@ -310,6 +328,7 @@ Standalone Question:"""
                 "mode": mode,
                 "low_confidence": True,
                 "timings_ms": timings,
+                "hydrated": hydrated_ids,
                 **({"standalone_question": search_query} if pairs else {}),
             }
 
@@ -336,6 +355,7 @@ Standalone Question:"""
                 "mode": mode,
                 "artifact_type": artifact_type,
                 "timings_ms": timings,
+                "hydrated": hydrated_ids,
             }
             if pairs:
                 result["standalone_question"] = search_query

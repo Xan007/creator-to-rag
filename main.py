@@ -3,6 +3,10 @@ from typing import List, Optional
 from rich.console import Console
 import typer
 
+from config.env import load_runtime_env
+
+load_runtime_env()
+
 app = typer.Typer(
     name="crag",
     help="crag — CreatorRAG: personal multi-source creator knowledge library with grounded RAG.",
@@ -48,6 +52,8 @@ def instagram_add_cmd(
     library: Optional[str] = typer.Option(None, "--library", "-l", help="Library slug"),
     max_posts: int = typer.Option(20, "--max-posts", help="Maximum posts to ingest"),
     newer_than: Optional[str] = typer.Option(None, "--newer-than"),
+    caption_only: bool = typer.Option(False, "--caption-only", help="Never download media"),
+    full_media: bool = typer.Option(False, "--full", help="Always download media (skip caption-first triage)"),
     user: Optional[str] = typer.Option(None, "--user", "-u", help="Library owner username"),
 ):
     """Ingest an Instagram creator or post/reel URL into a library."""
@@ -59,6 +65,8 @@ def instagram_add_cmd(
         result = add_reel(
             [username],
             library_id=library_id,
+            caption_only=caption_only,
+            full_media=full_media,
             progress=console.print,
         )
         if result["failed"]:
@@ -70,6 +78,8 @@ def instagram_add_cmd(
         library_id=library_id,
         max_posts=max_posts,
         newer_than=newer_than,
+        caption_only=caption_only,
+        full_media=full_media,
         progress=console.print,
     )
     console.print(
@@ -83,10 +93,11 @@ def tiktok_add_cmd(
     url: str = typer.Argument(..., help="TikTok video or profile URL"),
     library: Optional[str] = typer.Option(None, "--library", "-l", help="Library slug"),
     caption_only: bool = typer.Option(False, "--caption-only"),
+    full_media: bool = typer.Option(False, "--full", help="Always download media"),
     user: Optional[str] = typer.Option(None, "--user", "-u", help="Library owner username"),
 ):
     """Ingest a TikTok video or discover videos from a profile."""
-    _add_social_url(url, library, caption_only, user, "TikTok")
+    _add_social_url(url, library, caption_only, user, "TikTok", full_media=full_media)
 
 
 def _add_social_url(
@@ -95,6 +106,7 @@ def _add_social_url(
     caption_only: bool,
     user: Optional[str],
     platform_label: str,
+    full_media: bool = False,
 ) -> None:
     from src.pipeline import ingest_urls, resolve_library
 
@@ -104,6 +116,7 @@ def _add_social_url(
         [url],
         owner_id=owner_id,
         caption_only=caption_only,
+        full_media=full_media,
         progress=console.print,
     )
     if result["failed"]:
@@ -257,6 +270,7 @@ def library_add_url_cmd(
     library_id: str = typer.Argument(..., help="Library ID"),
     urls: List[str] = typer.Argument(..., help="Public video URLs"),
     caption_only: bool = typer.Option(False, "--caption-only"),
+    full_media: bool = typer.Option(False, "--full", help="Always download media"),
     keep_media: bool = typer.Option(False, "--keep-media"),
 ):
     from src.pipeline import ingest_urls
@@ -267,6 +281,7 @@ def library_add_url_cmd(
         urls,
         owner_id=owner_id,
         caption_only=caption_only,
+        full_media=full_media,
         keep_media=keep_media,
         progress=console.print,
     )
@@ -277,13 +292,21 @@ def library_add_url_cmd(
 def saved_process_cmd(
     limit: Optional[int] = typer.Option(None, "--limit", help="Max pending posts to process"),
     caption_only: bool = typer.Option(False, "--caption-only", help="Skip media download"),
+    full_media: bool = typer.Option(False, "--full", help="Always download media"),
     workers: int = typer.Option(4, "--workers", help="Worker count"),
     user: Optional[str] = typer.Option(None, "--user", "-u", help="Account username"),
 ):
     from src.pipeline import process_saved
     uid = _get_active_user(user)
     try:
-        res = process_saved(uid, limit=limit, caption_only=caption_only, workers=workers, progress=console.print)
+        res = process_saved(
+            uid,
+            limit=limit,
+            caption_only=caption_only,
+            full_media=full_media,
+            workers=workers,
+            progress=console.print,
+        )
         console.print(f"\n[bold green]Finished processing saved posts![/bold green] Processed: {res['processed']}, Already Indexed: {res['already_indexed']}, Failed: {res['failed']}")
     except Exception as e:
         console.print(f"[bold red]Processing failed:[/bold red] {e}")

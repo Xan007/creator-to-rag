@@ -123,7 +123,7 @@ Prefer `uv run crag` so you are not on a stale global install.
 | Export | `query ... --artifact workout_plan -o file.pdf` |
 | Legacy | `group …`, `saved import` / `saved process` |
 
-There is no `profile` command group. Ingestion progress prints `[n/m] Downloading` / `Analyzing`.
+There is no `profile` command group. Ingest is caption-first by default; `--full` always downloads media. Query hydrates retrieved caption-only sources before answering.
 
 Full examples: [docs/usage.md](docs/usage.md).
 
