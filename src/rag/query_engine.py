@@ -31,6 +31,22 @@ MAX_CAPTION_CHARS = 600
 MODES = ("strict", "grounded_plus")
 
 
+_REFUSAL_HINTS = (
+    "no encontré",
+    "no tengo esa información",
+    "don't have that information",
+    "no encontré posts relevantes",
+)
+
+
+def _answer_used_context(answer: str) -> bool:
+    text = (answer or "").strip()
+    if len(text) < 40:
+        return False
+    lowered = text.lower()
+    return not any(hint in lowered for hint in _REFUSAL_HINTS)
+
+
 _LOW_CONFIDENCE_ANSWER = (
     "No encontré información directa sobre eso en los posts o reels guardados de los creadores. "
     "¿Quieres que busquemos sobre otro ejercicio, tema o receta?"
@@ -42,7 +58,7 @@ Your knowledge comes from the Instagram posts and reels provided in the context.
 Conversation Guidelines:
 1. Answer accurately, clearly, and concisely in the same language as the user's question.
 2. Avoid robotic phrasing: do not say "Based on the provided documents" or "In the context given".
-3. Cite your sources with [Source N] sparingly and naturally only when giving specific recommendations or data from creators. Do not spam or overuse citations on every single line.
+3. When you use a specific exercise, sets/reps, ingredient, or step from the context, cite it with [Source N] on that item (use the number from the context header). Mentioning @creator is optional; [Source N] is required so the app can link the original post. Do not invent source numbers or skip citations on those items.
 4. NEVER invent, paste, or repeat URLs or posts that are not in the context.
 5. Balanced proactivity: If the user asks a purely factual question, answer directly and concisely. If they ask for advice, planning, or routines, naturally offer 1 or 2 helpful follow-up suggestions or next steps without being pushy."""
 
@@ -181,8 +197,13 @@ User Question:
 
     @staticmethod
     def annotate_citations(answer: str, sources: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        cited = set(_CITATION_RE.findall(answer))
-        return [{**src, "cited": str(i) in cited} for i, src in enumerate(sources, start=1)]
+        cited = set(_CITATION_RE.findall(answer or ""))
+        flagged = [{**src, "cited": str(i) in cited} for i, src in enumerate(sources, start=1)]
+        # Groq/other answer models often name @creator and skip [Source N].
+        # Still list the retrieved posts so the user can open the original URL.
+        if sources and not cited and _answer_used_context(answer):
+            return [{**src, "cited": True} for src in flagged]
+        return flagged
 
     @staticmethod
     def sanitize_citations(answer: str, source_count: int) -> str:

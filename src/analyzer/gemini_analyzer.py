@@ -1,9 +1,11 @@
 import logging
 import os
 import time
-from typing import Dict, List, Optional
+from pathlib import Path
+from typing import Callable, Dict, List, Optional
 from google import genai
 from config.env import load_runtime_env
+from src.analyzer.media_optimize import prepare_for_gemini, should_transcode
 from src.llm.gemini_limits import GEMINI_REQUEST_LIMIT
 
 load_runtime_env()
@@ -11,17 +13,28 @@ load_runtime_env()
 logger = logging.getLogger(__name__)
 
 DEFAULT_EXTRACTION_MODEL = "gemini-3.5-flash"
+# Each Flash SKU has its own free-tier RPM/RPD/TPM. Skip Gemma (no native
+# video+audio on the hosted API) and Pro 3.1 (paid-only).
+DEFAULT_EXTRACTION_FALLBACKS = [
+    "gemini-3.5-flash-lite",
+    "gemini-3.8-flash",
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.1-flash-lite",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+]
 
 
 def extraction_models() -> List[str]:
     primary = os.getenv("GEMINI_EXTRACTION_MODEL", DEFAULT_EXTRACTION_MODEL).strip()
     primary = primary or DEFAULT_EXTRACTION_MODEL
-    fallback = [
+    extra = [
         value.strip()
         for value in os.getenv("GEMINI_EXTRACTION_FALLBACK_MODELS", "").split(",")
         if value.strip()
     ]
-    fallback.extend(["gemini-3.5-flash-lite", "gemini-3.6-flash"])
+    fallback = [*extra, *DEFAULT_EXTRACTION_FALLBACKS]
     # Migrate the model used by older local .env files automatically. Gemini
     # rejects this model for new accounts instead of returning a normal 404.
     if primary in {"gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"}:
@@ -79,23 +92,51 @@ class GeminiAnalyzer:
             raise ValueError("GEMINI_API_KEY environment variable is not set.")
         self.client = genai.Client(api_key=key)
 
-    def extract_knowledge(self, media_files: List[Dict[str, str]], post_description: str) -> str:
+    def extract_knowledge(
+        self,
+        media_files: List[Dict[str, str]],
+        post_description: str,
+        progress: Optional[Callable[[str], None]] = None,
+    ) -> str:
+        def note(message: str) -> None:
+            logger.info(message)
+            if progress:
+                progress(message)
+
         uploaded_files = []
+        local_temps = []
         try:
+            if not media_files:
+                note("no media file — extracting from caption")
             for item in media_files:
-                path = item["path"]
-                logger.info("Uploading %s %s to Gemini...", item["type"], path)
+                kind = item.get("type", "file")
+                path = item.get("path") or ""
+                if kind == "video" and path and should_transcode(path):
+                    note("shrinking video to 720p...")
+                prepared = prepare_for_gemini(item)
+                path = prepared["path"]
+                if prepared.get("optimized"):
+                    local_temps.append(path)
+                size_mb = Path(path).stat().st_size / (1024 * 1024) if Path(path).exists() else 0
+                note(f"uploading {kind} to Gemini ({size_mb:.1f} MB)...")
                 gfile = self.client.files.upload(file=path)
 
-                if item["type"] == "video":
+                if prepared.get("type") == "video":
+                    started = time.time()
+                    last_report = -10
                     while gfile.state.name == "PROCESSING":
-                        logger.info("Waiting for video processing...")
+                        elapsed = int(time.time() - started)
+                        if elapsed - last_report >= 10:
+                            note(f"Gemini processing video... {elapsed}s (this can take a minute)")
+                            last_report = elapsed
                         time.sleep(2)
                         gfile = self.client.files.get(name=gfile.name)
 
+                    elapsed = int(time.time() - started)
                     if gfile.state.name == "FAILED":
-                        logger.warning("Processing failed for %s", path)
+                        note(f"Gemini failed to process video after {elapsed}s")
                         continue
+                    note(f"video ready after {elapsed}s")
 
                 uploaded_files.append(gfile)
 
@@ -107,39 +148,48 @@ class GeminiAnalyzer:
                 for attempt in range(4):
                     try:
                         chat = self.client.chats.create(model=model_name)
-                        with GEMINI_REQUEST_LIMIT:
+                        if not GEMINI_REQUEST_LIMIT.acquire(blocking=False):
+                            note(f"waiting for Gemini slot ({model_name}, 1 extract at a time)...")
+                            GEMINI_REQUEST_LIMIT.acquire()
+                        try:
+                            note(f"extracting with {model_name}...")
                             response = chat.send_message(contents)
+                        finally:
+                            GEMINI_REQUEST_LIMIT.release()
                         return response.text.strip()
                     except Exception as e:
                         last_error = e
                         err_str = str(e)
                         if "503" in err_str or "UNAVAILABLE" in err_str:
-                            logger.info("Model %s unavailable. Trying next model...", model_name)
+                            note(f"{model_name} unavailable, trying next model")
                             break
                         if "404" in err_str or "NOT_FOUND" in err_str:
-                            logger.info("Model %s not found. Trying next model...", model_name)
+                            note(f"{model_name} not found, trying next model")
                             break
                         if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
                             if attempt < 3:
                                 wait_seconds = min(30, 5 * (2 ** attempt))
-                                logger.info(
-                                    "Rate limit on %s. Retrying in %ss (%d/4)...",
-                                    model_name,
-                                    wait_seconds,
-                                    attempt + 1,
+                                note(
+                                    f"rate limit on {model_name}, retry {attempt + 1}/4 in {wait_seconds}s"
                                 )
                                 time.sleep(wait_seconds)
                             else:
-                                logger.info("Rate limit persists on %s. Trying next model...", model_name)
+                                note(f"rate limit persists on {model_name}, trying next model")
                                 break
                         else:
                             # Authentication, invalid model, and malformed requests are
                             # deterministic failures; retrying them only adds latency.
+                            note(f"{model_name} failed: {e}")
                             break
 
             raise RuntimeError(f"All fallback models failed for knowledge extraction: {last_error}")
 
         finally:
+            for temp_path in local_temps:
+                try:
+                    Path(temp_path).unlink(missing_ok=True)
+                except Exception:
+                    pass
             for gfile in uploaded_files:
                 try:
                     self.client.files.delete(name=gfile.name)

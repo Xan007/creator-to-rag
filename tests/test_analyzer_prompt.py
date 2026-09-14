@@ -1,5 +1,9 @@
 """Tests for the Gemini extraction prompt template."""
-from src.analyzer.gemini_analyzer import EXTRACTION_PROMPT_TEMPLATE, build_extraction_prompt
+from src.analyzer.gemini_analyzer import (
+    EXTRACTION_PROMPT_TEMPLATE,
+    build_extraction_prompt,
+    extraction_models,
+)
 
 
 def test_caption_is_injected():
@@ -25,3 +29,21 @@ def test_hard_rules_present():
 def test_strips_whitespace_of_description():
     prompt = build_extraction_prompt("  hola  ")
     assert '"hola"' in prompt
+
+
+def test_extraction_models_cover_free_video_flash(monkeypatch):
+    monkeypatch.delenv("GEMINI_EXTRACTION_MODEL", raising=False)
+    monkeypatch.delenv("GEMINI_EXTRACTION_FALLBACK_MODELS", raising=False)
+    models = extraction_models()
+    assert models[0] == "gemini-3.5-flash"
+    assert models[1] == "gemini-3.5-flash-lite"
+    assert models[2:] == [
+        "gemini-3.8-flash",
+        "gemini-3.7-flash",
+        "gemini-3.6-flash",
+        "gemini-3.1-flash-lite",
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
+    ]
+    assert "gemma-4-26b-a4b-it" not in models
+    assert "gemini-3.1-pro-preview" not in models

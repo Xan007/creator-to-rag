@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
 from src.connectors.url import extract_url_source
-from src.pipeline._common import Progress, download_with_ytdlp, echo
+from src.pipeline._common import Progress, download_with_ytdlp, echo, locked_progress, post_step
 from storage.db import get_session
 import storage.repositories as repo
 
@@ -69,6 +69,8 @@ def ingest_urls(
     from config.settings import load_settings
     from src.indexer.pinecone_indexer import PineconeIndexer
 
+    progress = locked_progress(progress)
+
     if not urls:
         raise ValueError("At least one URL is required.")
     if owner_id:
@@ -98,6 +100,11 @@ def ingest_urls(
 
     def ingest_one(position: int, url: str) -> Dict[str, Any]:
         files = []
+        sid = _source_id(url)
+
+        def step(message: str) -> None:
+            progress(post_step(position, total_urls, sid[:8], message))
+
         try:
             source = extract_url_source(url)
             sid = _source_id(url)
@@ -107,7 +114,7 @@ def ingest_urls(
                 if existing and existing.status == "indexed":
                     already_full = existing.ingest_status != "caption_indexed"
                     if already_full or not full_media:
-                        progress(f"[{position}/{total_urls}] Skipping already indexed source: {url}")
+                        progress(post_step(position, total_urls, sid[:8], "already indexed, skipping"))
                         return {
                             "added": [{
                                 "source_id": existing.id,
@@ -129,15 +136,24 @@ def ingest_urls(
                 platform=source.platform,
             )
             if should_download:
-                progress(f"[{position}/{total_urls}] Downloading {source.platform} source: {url}")
+                step(f"downloading {source.platform}...")
                 files = download_with_ytdlp(url, sid, prefix=source.platform) or []
+                if files and analyzer:
+                    if settings.engine == "gemini":
+                        extracted = analyzer.extract_knowledge(
+                            files, source.description, progress=step
+                        )
+                    else:
+                        extracted = analyzer.extract_knowledge(files, source.description)
+                else:
+                    extracted = (
+                        analyzer.extract_knowledge([], source.description)
+                        if analyzer
+                        else source.description
+                    )
             else:
-                progress(f"[{position}/{total_urls}] Caption-only index {source.platform} source: {url}")
-            progress(f"[{position}/{total_urls}] Analyzing {source.platform} source: {url}")
-            if files and analyzer:
-                extracted = analyzer.extract_knowledge(files, source.description)
-            else:
-                extracted = analyzer.extract_knowledge([], source.description) if analyzer else source.description
+                step("caption-only — skipping download")
+                extracted = source.description
             chunks = indexer.index_source(
                 source_id=sid,
                 library_id=library_id,
@@ -174,7 +190,7 @@ def ingest_urls(
                     return nested
             except Exception as fallback_exc:
                 exc = fallback_exc
-            progress(f"[{position}/{total_urls}] Failed {url}: {exc}")
+            progress(post_step(position, total_urls, sid[:8], f"failed: {exc}"))
             return {"added": [], "failed": [{"url": url, "error": str(exc)}]}
         finally:
             if files and not keep_media:

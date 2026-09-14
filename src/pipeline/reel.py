@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional
 
 from config.settings import load_settings
 from config.utils import shortcode_from_url
-from src.pipeline._common import Progress, download_with_ytdlp, echo
+from src.pipeline._common import Progress, download_with_ytdlp, echo, post_step
 from storage.db import get_session
 import storage.repositories as repo
 
@@ -119,23 +119,35 @@ def add_reel(
                         full_media=full_media,
                         platform="instagram",
                     )
-                    if should_download and meta.get("media_items"):
-                        downloaded_files = downloader.download_media_items(meta["media_items"], reel_id) or []
                     if should_download:
-                        progress(f"[{position}/{total_urls}] Downloading media for {url}")
-                    else:
-                        progress(f"[{position}/{total_urls}] Caption-only index for {url}")
-                    if should_download and not downloaded_files:
-                        downloaded_files = download_with_ytdlp(meta["url"], reel_id, prefix="reel") or []
+                        progress(post_step(position, total_urls, reel_id, "downloading media..."))
+                        downloaded_files = downloader.download_media_items(
+                            meta.get("media_items") or [],
+                            reel_id,
+                            permalink=url,
+                            progress=lambda message: progress(post_step(position, total_urls, reel_id, message)),
+                        ) or []
+                        if not downloaded_files:
+                            downloaded_files = download_with_ytdlp(url, reel_id, prefix="reel") or []
                 except Exception as e:
-                    progress(f"Media download failed: {e} - using caption.")
+                    progress(post_step(position, total_urls, reel_id, f"download failed, using caption: {e}"))
                     ingest_status = "caption_indexed"
 
-                progress(f"[{position}/{total_urls}] Analyzing content for {reel_id}...")
+                step = lambda message: progress(post_step(position, total_urls, reel_id, message))
+                extract_kwargs = {} if is_whisper else {"progress": step}
                 if downloaded_files:
-                    extracted_text = analyzer.extract_knowledge(downloaded_files, description)
+                    extracted_text = analyzer.extract_knowledge(
+                        downloaded_files, description, **extract_kwargs
+                    )
+                elif ingest_status == "caption_indexed":
+                    step("caption-only — skipping download")
+                    extracted_text = description
                 else:
-                    extracted_text = analyzer.extract_knowledge([], description) if description else ""
+                    extracted_text = (
+                        analyzer.extract_knowledge([], description, **extract_kwargs)
+                        if description
+                        else ""
+                    )
 
                 indexer.index_post(
                     post_id=reel_id,

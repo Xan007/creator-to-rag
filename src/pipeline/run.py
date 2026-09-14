@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from config.ig_profiles import IGProfileInfo, load_ig_profile, save_ig_profile
-from src.pipeline._common import Progress, echo
+from src.pipeline._common import Progress, echo, locked_progress, post_step
 
 
 def _now_iso() -> str:
@@ -31,6 +31,7 @@ def scrape_profile(
     from storage.db import get_session
     import storage.repositories as repo
 
+    progress = locked_progress(progress)
     run_start = time.time()
     run_iso = _now_iso()
 
@@ -102,6 +103,11 @@ def scrape_profile(
             post_type = post.get("type", "Post")
             description = post.get("description", "")
             media_items = post.get("media_items", [])
+            total = len(all_posts)
+            started = time.time()
+
+            def step(message: str) -> None:
+                progress(post_step(post_number, total, post_id, message))
 
             downloaded = []
             audio_sources = []
@@ -115,25 +121,33 @@ def scrape_profile(
                     platform="instagram",
                 )
                 if should_download:
-                    progress(f"  [{post_number}/{len(all_posts)}] Downloading: {post_type} {post_url}")
+                    step(f"downloading {post_type.lower()}...")
                     if is_whisper:
                         video_urls = [m["url"] for m in media_items if m.get("type") == "video"]
                         audio_sources = [post["url"]] if post.get("url") and video_urls else []
                         audio_sources += [u for u in video_urls if u != post.get("url")]
-                    elif media_items:
-                        downloaded = downloader.download_media_items(media_items, post_id) or []
+                    else:
+                        downloaded = downloader.download_media_items(
+                            media_items,
+                            post_id,
+                            permalink=post_url,
+                            progress=step,
+                        ) or []
+                        if downloaded:
+                            step(f"downloaded {len(downloaded)} file(s)")
+                        else:
+                            step("no media on disk, Gemini will use the caption")
+                    if is_whisper:
+                        extracted = analyzer.extract_knowledge(
+                            downloaded, description, video_urls=audio_sources
+                        )
+                    else:
+                        extracted = analyzer.extract_knowledge(
+                            downloaded, description, progress=step
+                        )
                 else:
-                    progress(
-                        f"  [{post_number}/{len(all_posts)}] Caption-only index: {post_id}"
-                    )
-
-                progress(f"  [{post_number}/{len(all_posts)}] Analyzing content for {post_id}...")
-                if is_whisper:
-                    extracted = analyzer.extract_knowledge(
-                        downloaded, description, video_urls=audio_sources
-                    )
-                else:
-                    extracted = analyzer.extract_knowledge(downloaded, description)
+                    step("caption-only — skipping download")
+                    extracted = description
 
                 indexer.index_post(
                     post_id=post_id,
@@ -145,16 +159,20 @@ def scrape_profile(
                     library_id=library_id,
                     ingest_status=ingest_status,
                 )
-                progress(f"  ✓ Indexed {post_id}")
+                elapsed = time.time() - started
+                step(f"indexed in {elapsed:.0f}s")
                 return "ok", post_id, None
             except Exception as err:
-                progress(f"  ✗ Error on {post_id}: {err}")
+                step(f"error: {err}")
                 return "error", post_id, err
             finally:
                 if downloaded and not keep_media:
                     downloader.cleanup_items(downloaded)
 
-        progress(f"Processing {len(all_posts)} post(s) concurrently...")
+        progress(
+            f"Processing {len(all_posts)} post(s) with 3 workers "
+            "(downloads in parallel, Gemini extract 1 at a time)..."
+        )
         with ThreadPoolExecutor(max_workers=3) as executor:
             futures = {
                 executor.submit(process_post_task, post_number, post): post

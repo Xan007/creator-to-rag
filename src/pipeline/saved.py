@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from config.saved import parse_saved_posts
 from src.analyzer.gemini_analyzer import GeminiAnalyzer
 from src.indexer.pinecone_indexer import PineconeIndexer
-from src.pipeline._common import Progress, download_with_ytdlp, echo
+from src.pipeline._common import Progress, download_with_ytdlp, echo, locked_progress, post_step
 from storage.db import get_session
 import storage.repositories as repo
 
@@ -70,6 +70,7 @@ def process_saved(
     workers: int = 4,
     progress: Progress = echo,
 ) -> Dict[str, Any]:
+    progress = locked_progress(progress)
     db = get_session()
     try:
         user_saved_post_ids = repo.get_user_saved_post_ids(db, user_id)
@@ -112,6 +113,11 @@ def process_saved(
         pid = post.id
         description = post.description or ""
         media_files = []
+        total = len(pending)
+
+        def step(message: str) -> None:
+            progress(post_step(position, total, pid, message))
+
         try:
             from src.analyzer.caption_triage import resolve_ingest_plan
 
@@ -122,22 +128,28 @@ def process_saved(
                 platform="instagram",
             )
             if should_download and post.url:
-                progress(f"[{position}/{len(pending)}] Downloading saved post {pid}")
+                step("downloading...")
                 try:
                     media_files = download_with_ytdlp(post.url, pid) or []
                 except Exception as e:
-                    progress(f"yt-dlp failed for {pid}: {e}")
+                    step(f"yt-dlp failed: {e}")
             elif not should_download:
-                progress(f"[{position}/{len(pending)}] Caption-only index saved post {pid}")
+                step("caption-only — skipping download")
 
             if media_files:
-                progress(f"[{position}/{len(pending)}] Analyzing saved post {pid}")
-                extracted_text = analyzer.extract_knowledge(media_files, description)
+                extracted_text = analyzer.extract_knowledge(
+                    media_files, description, progress=step
+                )
+            elif not should_download:
+                if not description:
+                    return "skipped", pid, None
+                extracted_text = description
             else:
                 if not description:
                     return "skipped", pid, None
-                progress(f"[{position}/{len(pending)}] Analyzing saved post {pid}")
-                extracted_text = analyzer.extract_knowledge([], description)
+                extracted_text = analyzer.extract_knowledge(
+                    [], description, progress=step
+                )
 
             indexer.index_post(
                 post_id=pid,

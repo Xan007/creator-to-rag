@@ -78,6 +78,15 @@ class TestAnnotateCitations:
         result = QueryEngine.annotate_citations("No tengo esa información.", sources)
         assert all(s["cited"] is False for s in result)
 
+    def test_grounded_answer_without_brackets_still_lists_sources(self):
+        sources = [{"creator": "dominicantips", "url": "https://ig/p/1"}]
+        answer = (
+            "Aquí tienes una mini rutina de piernas con sentadilla búlgara "
+            "y pistol squat, de fácil a difícil, usando solo tu cuerpo."
+        )
+        result = QueryEngine.annotate_citations(answer, sources)
+        assert result[0]["cited"] is True
+
     def test_original_keys_preserved(self):
         result = QueryEngine.annotate_citations("[Source 1]", [{"creator": "x", "url": "u", "score": 0.9}])
         assert result[0]["score"] == 0.9 and result[0]["creator"] == "x" and result[0]["cited"] is True
