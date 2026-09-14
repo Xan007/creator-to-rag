@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from config.env import getenv
 from config import saved as saved_config
 from config.groups import (
     GroupInfo,
@@ -57,7 +58,7 @@ app = FastAPI(
     version="0.3.0",
 )
 
-_cors_origins = [o.strip() for o in os.getenv("INSTARAG_CORS_ORIGINS", "").split(",") if o.strip()]
+_cors_origins = [o.strip() for o in (getenv("CORS_ORIGINS") or "").split(",") if o.strip()]
 if _cors_origins:
     app.add_middleware(
         CORSMiddleware,
@@ -68,7 +69,7 @@ if _cors_origins:
 
 
 async def require_api_key(x_api_key: Optional[str] = Header(None)) -> None:
-    expected = os.getenv("INSTARAG_API_KEY")
+    expected = getenv("API_KEY")
     if expected and x_api_key != expected:
         raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key header.")
 
@@ -134,7 +135,10 @@ class QueryIn(BaseModel):
     top_k: int = 6
     min_score: float = 0.35
     history: Optional[List[ChatTurn]] = None
-    artifact_type: Optional[str] = None
+    artifact_type: Optional[str] = Field(
+        default=None,
+        description="Optional explicit export: workout_plan, recipe_book, or grocery_list. Never inferred from the question.",
+    )
 
 
 class UserIn(BaseModel):
@@ -188,7 +192,7 @@ async def get_current_user(
     """Resolve active user context from HTTP headers, environment, or single existing user."""
     identifier = x_user_id or x_username
     if identifier:
-        auto_create = os.getenv("INSTARAG_AUTO_CREATE_USERS", "true").lower() in ("true", "1", "yes")
+        auto_create = (getenv("AUTO_CREATE_USERS", "true") or "true").lower() in ("true", "1", "yes")
         if auto_create:
             return get_or_create_user(identifier)
         user = load_user_by_id(identifier) or load_user(identifier)
@@ -213,7 +217,7 @@ def _resolve_api_user(
     current_user: Optional[UserInfo] = None,
 ) -> UserInfo:
     """Resolve user from explicit parameters, current user context, or system defaults."""
-    auto_create = os.getenv("INSTARAG_AUTO_CREATE_USERS", "true").lower() in ("true", "1", "yes")
+    auto_create = (getenv("AUTO_CREATE_USERS", "true") or "true").lower() in ("true", "1", "yes")
     if username:
         user = load_user(username)
         if not user and auto_create:

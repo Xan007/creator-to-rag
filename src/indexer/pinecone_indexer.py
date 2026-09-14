@@ -6,13 +6,13 @@ from typing import Any, Dict, List, Optional
 
 from google import genai
 from pinecone import Pinecone, ServerlessSpec
-from config.env import load_runtime_env
+from config.env import getenv, load_runtime_env
 
 load_runtime_env()
 
 logger = logging.getLogger(__name__)
 
-INDEX_NAME = os.getenv("INSTARAG_PINECONE_INDEX", "instarag-v2")
+INDEX_NAME = getenv("PINECONE_INDEX", "creatorrag")
 EMBEDDING_MODEL = "gemini-embedding-001"
 EMBEDDING_DIM = 3072
 MAX_CAPTION_CHARS = 1000

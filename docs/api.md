@@ -1,100 +1,85 @@
-# HTTP REST API Reference (`src/api/`)
+# HTTP API
 
-The InstaRAG HTTP service provides REST endpoints for managing background ingestion tasks, retrieving knowledge, and querying custom RAG agents.
+FastAPI service for libraries, background ingest, and grounded queries.
 
----
-
-## Running the API Server
-
-### Local Development
+## Run
 
 ```bash
 uv sync --extra api
-uv run python -m src.api.main
+uv run crag-api
+# or: uv run python -m src.api.main
 ```
 
-The server binds to `http://127.0.0.1:8000` by default. Interactive OpenAPI documentation is accessible at `http://127.0.0.1:8000/docs`.
+Binds `http://127.0.0.1:8000` by default. OpenAPI: `/docs`.
 
-### Docker Deployment
+Docker: `docker compose up -d --build`.
 
-```bash
-docker compose up -d --build
-```
+## Auth and user
 
----
+- `CRAG_API_KEY`: when set, every route except `/health` needs `X-API-Key`.
+- Identity: `X-User-Id` or `X-Username`. `CRAG_AUTO_CREATE_USERS=true` (default) provisions users on the fly.
+- If headers are omitted, falls back to `CRAG_USER` or the single registered user.
 
-## Authentication and User Context
-
-- **API Protection:** Set the `INSTARAG_API_KEY` environment variable. When set, all requests (except `/health`) must include the `X-API-Key: <your_secret_key>` header.
-- **Identity Decoupling & User Context:** Pass `X-User-Id: <user_id>` or `X-Username: <username>` headers in requests. When `INSTARAG_AUTO_CREATE_USERS=true` (default), users are provisioned on-the-fly without requiring prior registration calls, enabling effortless integration with Clerk, Supabase Auth, Firebase, or custom JWT middlewares.
-- **Single-User & Local Mode:** If headers are omitted, InstaRAG automatically falls back to the `INSTARAG_USER` environment variable or the single registered user in the database.
-
----
-
-## Endpoint Summary
+## Endpoints
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/health` | Liveness and readiness check. Returns `{"status": "ok"}`. |
-| GET / PATCH | `/config` | Inspect and update global pipeline settings (`audio_only`, `engine`, `embed_provider`). |
-| GET / POST | `/users` | List registered users or create a new user account. |
-| GET / DELETE | `/users/{username}` | Retrieve details or delete a registered user. |
-| GET / POST | `/groups` | List scoped RAG groups for user or create a new group. |
-| GET / DELETE | `/groups/{group_id}` | Retrieve group metadata and post IDs or delete a group. |
-| POST / DELETE | `/groups/{group_id}/posts` | Add/remove posts, reels, or creator content in a group. |
-| POST / DELETE | `/groups/{group_id}/share` | Share or revoke group access for another user. |
-| GET / POST | `/profiles` | List registered creator profiles or register a new creator profile. |
-| GET / DELETE | `/profiles/{username}` | Retrieve details or delete a registered profile. |
-| POST | `/profiles/{username}/reset` | Reset processing history for a creator profile. |
-| POST | `/jobs/run` | Submit an asynchronous background job to scrape and index a creator. |
-| POST | `/jobs/add-reel` | Submit an asynchronous background job to ingest reel URLs. |
-| POST | `/jobs/saved-process` | Submit an asynchronous background job to process user saved posts. |
-| GET | `/jobs` | List recent background jobs and worker queue status. |
-| GET | `/jobs/{job_id}` | Inspect job status, execution metrics, and timestamped log tail. |
-| POST | `/saved/import` | Upload an Instagram data export (`.zip` or `saved_posts.json`) scoped to user. |
-| GET | `/saved/status` | Retrieve import counters and pending post stats. |
-| POST | `/saved/reset` | Clear processed saved posts state for user. |
-| POST | `/query` | Execute a grounded RAG query with optional multi-turn conversation history. |
+| GET | `/health` | `{"status": "ok"}` |
+| GET / PATCH | `/config` | `audio_only`, `engine`, `embed_provider` |
+| GET / POST | `/libraries` | List or create libraries for the current user |
+| POST | `/libraries/{id}/sources` | Ingest `url` or `urls` asynchronously (`202`) |
+| GET / POST | `/users` | List or create users |
+| GET / DELETE | `/users/{username}` | Get or delete a user |
+| GET / POST | `/groups` | Legacy groups |
+| GET / DELETE | `/groups/{group_id}` | Group detail or delete |
+| POST / DELETE | `/groups/{group_id}/posts` | Group membership |
+| POST / DELETE | `/groups/{group_id}/share` | Share access |
+| GET / POST | `/profiles` | Legacy Instagram profile registry |
+| GET / PATCH / DELETE | `/profiles/{username}` | Profile CRUD |
+| POST | `/profiles/{username}/reset` | Reset scrape history |
+| POST | `/jobs/run` | Background profile ingest |
+| POST | `/jobs/add-reel` | Background reel ingest |
+| POST | `/jobs/saved-process` | Background saved-post ingest |
+| GET | `/jobs` | Recent jobs |
+| GET | `/jobs/{job_id}` | Status and log tail |
+| POST | `/saved/import` | Upload Instagram export |
+| GET | `/saved/status` | Import counters |
+| POST | `/saved/reset` | Clear saved-post state |
+| POST | `/query` | Grounded RAG |
 
----
+Heavy ingest routes return `202` with `{ "job_id", "status_url" }`. Poll `GET /jobs/{job_id}`.
 
-## Asynchronous Background Jobs
-
-Resource-heavy operations (`/jobs/run`, `/jobs/add-reel`, and `/jobs/saved-process`) return HTTP status `202 Accepted` with a JSON payload:
+## Query body
 
 ```json
 {
-  "job_id": "a1b2c3d4",
-  "status_url": "/jobs/a1b2c3d4"
-}
-```
-
-Clients should poll `GET /jobs/{job_id}` until `status` transitions to `completed` or `failed`. The response includes a live log tail from the pipeline worker.
-
----
-
-## RAG Query Payload Specification
-
-```json
-POST /query
-Content-Type: application/json
-
-{
-  "question": "What protein sources does this creator recommend?",
-  "creator": "fitness_coach",
+  "question": "What protein sources does this library recommend?",
+  "library": "mis-creadores",
   "mode": "grounded_plus",
   "top_k": 6,
   "min_score": 0.35,
   "history": [
     {"role": "user", "content": "Tell me about diet recommendations."},
-    {"role": "assistant", "content": "The creator recommends lean meats, eggs, and Greek yogurt."}
+    {"role": "assistant", "content": "The creator recommends eggs and Greek yogurt."}
   ]
 }
 ```
 
-### Response Attributes
+Optional scopes: `library` or `library_id`, `creator`, `group_name`.
 
-- `answer` (string): Synthesized answer with `[Source N]` citation tags.
-- `sources` (array): Retrieved post objects containing `creator`, `url`, `score`, and a boolean `cited` flag indicating if the model used that specific post in the final answer.
-- `mode` (string): `grounded_plus` or `strict`.
-- `standalone_question` (string, optional): The condensed standalone query generated from conversation history.
+Optional export (never inferred from `question`):
+
+```json
+"artifact_type": "workout_plan"
+```
+
+Allowed: `workout_plan`, `recipe_book`, `grocery_list`.
+
+### Response
+
+- `answer`: text with `[Source N]` tags.
+- `sources`: `creator`, `url`, `score`, `cited`.
+- `mode`: `grounded_plus` or `strict`.
+- `timings_ms`: embedding / retrieve / generate (when present).
+- `artifact`: `{ path, filename, type, format, title }` only if `artifact_type` was set.
+- `standalone_question`: condensed follow-up query when `history` is used.

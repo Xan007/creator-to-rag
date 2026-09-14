@@ -1,8 +1,8 @@
 ﻿import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from src.agent.intent import ArtifactIntent, ArtifactIntentDetector
-from src.rag.artifacts import export_artifact, get_artifact_system_prompt
+from src.agent.intent import ArtifactIntent
+from src.rag.artifacts import export_artifact
 
 logger = logging.getLogger(__name__)
 

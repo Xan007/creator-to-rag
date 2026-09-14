@@ -1,52 +1,46 @@
-import datetime
-import os
 from pathlib import Path
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-WORKOUT_PLAN_SYSTEM = """You are an expert fitness coach. Your output must be concise, clean, and direct without conversational filler.
-Build a structured workout plan based EXCLUSIVELY on the knowledge from the cited posts. Respond in the same language as the user's query.
+WORKOUT_PLAN_SYSTEM = """You are a coach writing a one-page training handout a person could print and take to the gym.
+Use ONLY facts from the cited posts. Same language as the user.
 
-Required Structure:
-1. Target Goal and Suggested Level (1-2 concise lines).
-2. Weekly Split Overview (concise list of days and muscle groups).
-3. Detailed Workout Schedule organized by Training Day:
-   For EACH training day, create a clear subheader (e.g. `### Day 1: Upper Body (Strength / Hypertrophy)`) followed by its dedicated Markdown table:
-   | Exercise | Sets | Reps | Key Notes |
-   (Translate headers and categories into the user's query language).
-   Do NOT create a 'Day' column that repeats the day on every row. Group exercises cleanly under their corresponding day subheader.
-4. Cite original sources using [Source N] sparingly and naturally only when directly relevant.
+Structure:
+1. A short title as `# ...` then 1-2 lines on goal and level. No slogans.
+2. Weekly split as a short list (not a marketing overview).
+3. Each training day: `### Day N: ...` then a table:
+   | Exercise | Sets | Reps | Notes |
+   Copy sets, reps, rest, and loads exactly. Do not invent numbers.
+4. Cite with [Source N] only on the row or sentence that comes from that post.
 
-Rule: Go straight to the plan. Zero long introductions, preambles, or filler conclusions.
+No "training brief", no "at a glance", no pep talk, no closing.
 """
 
+RECIPE_BOOK_SYSTEM = """You are writing a recipe card someone would keep on the kitchen counter.
+Use ONLY facts from the cited posts. Same language as the user.
 
-RECIPE_BOOK_SYSTEM = """You are an expert chef and nutritionist. Your output must be direct, clear, and free of conversational fluff.
-Build the recipe step-by-step based on the knowledge from the cited posts. Respond in the same language as the user's query.
+Structure:
+1. Dish name as `# ...` and prep time if the sources say it.
+2. Ingredients table: | Ingredient | Quantity | Notes |
+3. Numbered method steps.
+4. At most two short notes (storage, swaps) if present in the sources.
+5. [Source N] only next to facts from that post.
 
-Required Structure:
-1. Dish Name and Estimated Prep Time.
-2. Markdown table of ingredients with columns: | Ingredient | Quantity | Notes / Substitution |
-3. Step-by-step preparation instructions clearly and directly.
-4. Nutritional or storage tips (maximum 2 brief bullet points).
-5. Cite original sources using [Source N] cleanly and sparingly.
-
-Rule: Zero introductory pleasantries. Go straight to the recipe.
+No restaurant copy and no "enjoy".
 """
 
-GROCERY_LIST_SYSTEM = """You are a practical and organized shopping assistant. Your output must be direct, clean, and structured.
-Consolidate the ingredients into a categorized grocery list based on the cited posts. Respond in the same language as the user's query.
+GROCERY_LIST_SYSTEM = """Write a shopping list someone would take to the store.
+Use ONLY ingredients from the cited posts. Same language as the user.
 
-Required Structure:
-- [ ] Proteins
-- [ ] Vegetables and Fruits
-- [ ] Carbs and Grains
-- [ ] Healthy Fats and Condiments
-- [ ] Others / Supplements
+Use markdown checklists grouped by:
+- Proteins
+- Vegetables and fruit
+- Carbs
+- Fats, condiments, other
 
-Rule: No greetings or sign-offs, output only the clean Markdown checklist ready for shopping.
+Format: `- [ ] item — amount` when an amount exists. Merge duplicates.
+No intro and no sign-off.
 """
-
 
 ARTIFACT_PROMPTS = {
     "workout_plan": WORKOUT_PLAN_SYSTEM,
@@ -55,13 +49,29 @@ ARTIFACT_PROMPTS = {
 }
 
 
-
-
 def get_artifact_system_prompt(artifact_type: Optional[str]) -> Optional[str]:
     if not artifact_type:
         return None
     key = artifact_type.strip().lower().replace("-", "_").replace(" ", "_")
     return ARTIFACT_PROMPTS.get(key)
+
+
+def _first_heading_and_body(content: str) -> Tuple[Optional[str], str]:
+    lines = content.split("\n")
+    heading = None
+    skip_idx = None
+    for i, raw in enumerate(lines):
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("# "):
+            heading = stripped[2:].strip()
+            skip_idx = i
+        break
+    if skip_idx is None:
+        return None, content
+    body = "\n".join(lines[:skip_idx] + lines[skip_idx + 1 :])
+    return heading, body.lstrip("\n")
 
 
 def _replace_sources_in_bracket(match: re.Match, sources_map: Optional[Dict[int, str]] = None) -> str:
@@ -86,7 +96,6 @@ def _md_to_reportlab_html(text: str, sources_map: Optional[Dict[int, str]] = Non
     escaped = re.sub(r"__(.+?)__", r"<b>\1</b>", escaped)
     escaped = re.sub(r"(?<!\*)\*([^*]+?)\*(?!\*)", r"<i>\1</i>", escaped)
     escaped = re.sub(r"`(.+?)`", r'<font face="Courier">\1</font>', escaped)
-    # Support both single [Source 1] and grouped [Source 1, Source 2, Source 5] linking directly to video URL
     escaped = re.sub(
         r"\[(Source\s*\d+[^\]]*)\]",
         lambda m: _replace_sources_in_bracket(m, sources_map=sources_map),
@@ -95,8 +104,6 @@ def _md_to_reportlab_html(text: str, sources_map: Optional[Dict[int, str]] = Non
     )
     escaped = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2"><u>\1</u></a>', escaped)
     return escaped
-
-
 
 
 def _is_table_row(line: str) -> bool:
@@ -117,7 +124,7 @@ def _parse_table_block(table_lines: List[str]) -> Optional[Tuple[List[str], List
     header = []
     rows = []
 
-    for i, line in enumerate(clean_lines):
+    for line in clean_lines:
         if _is_table_separator(line):
             continue
         cells = [c.strip() for c in line.strip("|").split("|")]
@@ -127,7 +134,7 @@ def _parse_table_block(table_lines: List[str]) -> Optional[Tuple[List[str], List
             if len(cells) < len(header):
                 cells += [""] * (len(header) - len(cells))
             elif len(cells) > len(header):
-                cells = cells[:len(header)]
+                cells = cells[: len(header)]
             rows.append(cells)
 
     if not header:
@@ -138,7 +145,7 @@ def _parse_table_block(table_lines: List[str]) -> Optional[Tuple[List[str], List
 def _render_reportlab_table(
     header: List[str],
     rows: List[List[str]],
-    max_width: float = 540.0,
+    max_width: float = 516.0,
     sources_map: Optional[Dict[int, str]] = None,
 ) -> Any:
     from reportlab.platypus import Table, TableStyle, Paragraph
@@ -157,9 +164,8 @@ def _render_reportlab_table(
 
     total_len = max(sum(col_max_lengths), 1)
     col_widths = []
-    for l in col_max_lengths:
-        fraction = max(l / total_len, 0.12)
-        col_widths.append(fraction)
+    for length in col_max_lengths:
+        col_widths.append(max(length / total_len, 0.12))
 
     norm_sum = sum(col_widths)
     actual_widths = [(w / norm_sum) * max_width for w in col_widths]
@@ -168,7 +174,7 @@ def _render_reportlab_table(
         "THStyle",
         fontSize=9,
         leading=12,
-        textColor=colors.black,
+        textColor=colors.HexColor("#333333"),
         fontName="Helvetica-Bold",
         alignment=0,
     )
@@ -176,46 +182,68 @@ def _render_reportlab_table(
         "TDStyle",
         fontSize=9,
         leading=12,
-        textColor=colors.black,
+        textColor=colors.HexColor("#333333"),
         fontName="Helvetica",
         alignment=0,
     )
 
     table_data = []
-    th_row = [Paragraph(_md_to_reportlab_html(h, sources_map=sources_map), th_style) for h in header]
-    table_data.append(th_row)
-
+    table_data.append(
+        [Paragraph(_md_to_reportlab_html(h, sources_map=sources_map), th_style) for h in header]
+    )
     for r in rows:
-        td_row = [Paragraph(_md_to_reportlab_html(c, sources_map=sources_map), td_style) for c in r]
-        table_data.append(td_row)
+        table_data.append(
+            [Paragraph(_md_to_reportlab_html(c, sources_map=sources_map), td_style) for c in r]
+        )
 
     t = Table(table_data, colWidths=actual_widths, repeatRows=1)
-
-    t_style = [
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#EEEEEE")),
-        ("ALIGN", (0, 0), (-1, -1), "LEFT"),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("TOPPADDING", (0, 0), (-1, -1), 6),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-        ("LEFTPADDING", (0, 0), (-1, -1), 6),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
-    ]
-
-    t.setStyle(TableStyle(t_style))
+    line = colors.HexColor("#DDDDDD")
+    t.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F5F5F5")),
+                ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("TOPPADDING", (0, 0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ("LINEBELOW", (0, 0), (-1, -1), 0.4, line),
+                ("LINEABOVE", (0, 0), (-1, 0), 0.4, line),
+                ("LINEBEFORE", (0, 0), (0, -1), 0.4, line),
+                ("LINEAFTER", (-1, 0), (-1, -1), 0.4, line),
+            ]
+        )
+    )
     return t
+
+
+def _draw_page_number(canvas, doc) -> None:
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib import colors
+
+    canvas.saveState()
+    canvas.setFillColor(colors.HexColor("#888888"))
+    canvas.setFont("Helvetica", 8)
+    canvas.drawCentredString(letter[0] / 2.0, 22, str(canvas.getPageNumber()))
+    canvas.restoreState()
 
 
 def export_artifact(
     content: str,
     output_path: str,
-    title: str = "InstaRAG Export",
+    title: str = "Documento",
     sources: Optional[List[Dict[str, Any]]] = None,
 ) -> Path:
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
 
     sources_map = {i: s.get("url", "") for i, s in enumerate(sources or [], start=1)}
+    cited_sources = [
+        (i, s) for i, s in enumerate(sources or [], start=1) if s.get("cited", True)
+    ]
+    heading, body = _first_heading_and_body(content)
+    display_title = heading or title
 
     if out.suffix.lower() == ".pdf":
         from reportlab.lib.pagesizes import letter
@@ -225,90 +253,127 @@ def export_artifact(
             Paragraph,
             Spacer,
             HRFlowable,
-            Table,
-            TableStyle,
+            PageBreak,
+            KeepTogether,
         )
         from reportlab.lib import colors
+
+        ink = colors.HexColor("#333333")
+        muted = colors.HexColor("#555555")
+        rule = colors.HexColor("#CCCCCC")
 
         doc = SimpleDocTemplate(
             str(out),
             pagesize=letter,
-            rightMargin=40,
-            leftMargin=40,
-            topMargin=40,
-            bottomMargin=40,
+            rightMargin=54,
+            leftMargin=54,
+            topMargin=54,
+            bottomMargin=46,
         )
-
         styles = getSampleStyleSheet()
-
         doc_title_style = ParagraphStyle(
-            "CleanDocTitle",
+            "DocTitle",
             parent=styles["Heading1"],
-            fontSize=18,
-            leading=22,
-            textColor=colors.black,
+            fontSize=16,
+            leading=20,
+            textColor=ink,
             fontName="Helvetica-Bold",
             spaceAfter=8,
         )
         h1_style = ParagraphStyle(
-            "CleanH1",
+            "DocH1",
             parent=styles["Heading1"],
-            fontSize=14,
-            leading=18,
-            textColor=colors.black,
+            fontSize=12,
+            leading=16,
+            textColor=ink,
             fontName="Helvetica-Bold",
-            spaceBefore=12,
+            spaceBefore=14,
             spaceAfter=6,
             keepWithNext=True,
         )
         h2_style = ParagraphStyle(
-            "CleanH2",
+            "DocH2",
             parent=styles["Heading2"],
-            fontSize=11.5,
-            leading=15,
-            textColor=colors.black,
+            fontSize=11,
+            leading=14,
+            textColor=ink,
             fontName="Helvetica-Bold",
             spaceBefore=10,
             spaceAfter=4,
             keepWithNext=True,
         )
         body_style = ParagraphStyle(
-            "CleanBody",
+            "DocBody",
             parent=styles["Normal"],
             fontSize=10,
             leading=14,
-            textColor=colors.black,
+            textColor=ink,
             fontName="Helvetica",
             spaceAfter=4,
         )
         bullet_style = ParagraphStyle(
-            "CleanBullet",
+            "DocBullet",
             parent=styles["Normal"],
             fontSize=10,
             leading=14,
-            textColor=colors.black,
+            textColor=ink,
             fontName="Helvetica",
             leftIndent=14,
             spaceAfter=3,
         )
         quote_style = ParagraphStyle(
-            "CleanQuote",
+            "DocQuote",
             parent=styles["Normal"],
-            fontSize=9.5,
-            leading=13.5,
-            textColor=colors.black,
+            fontSize=10,
+            leading=14,
+            textColor=muted,
             fontName="Helvetica-Oblique",
-            leftIndent=16,
+            leftIndent=14,
             spaceBefore=4,
             spaceAfter=6,
         )
+        source_heading_style = ParagraphStyle(
+            "SourceHeading",
+            parent=styles["Heading1"],
+            fontSize=14,
+            leading=18,
+            textColor=ink,
+            fontName="Helvetica-Bold",
+            spaceAfter=8,
+        )
+        source_title_style = ParagraphStyle(
+            "SourceTitle",
+            parent=styles["Normal"],
+            fontSize=10,
+            leading=14,
+            textColor=ink,
+            fontName="Helvetica-Bold",
+            spaceAfter=2,
+        )
+        source_body_style = ParagraphStyle(
+            "SourceBody",
+            parent=styles["Normal"],
+            fontSize=10,
+            leading=13,
+            textColor=muted,
+            fontName="Helvetica",
+            spaceAfter=3,
+        )
+        source_url_style = ParagraphStyle(
+            "SourceUrl",
+            parent=styles["Normal"],
+            fontSize=9,
+            leading=12,
+            textColor=muted,
+            fontName="Helvetica",
+            spaceAfter=12,
+        )
 
         elements = []
+        elements.append(Paragraph(_md_to_reportlab_html(display_title), doc_title_style))
+        elements.append(HRFlowable(width="100%", thickness=0.5, color=rule, spaceBefore=0, spaceAfter=12))
 
-        elements.append(Paragraph(f"<b>{title}</b>", doc_title_style))
-        elements.append(HRFlowable(width="100%", thickness=1, color=colors.black, spaceBefore=2, spaceAfter=12))
-
-        raw_lines = content.split("\n")
+        raw_lines = body.split("\n")
         idx = 0
         while idx < len(raw_lines):
             line = raw_lines[idx].strip()
@@ -322,15 +387,16 @@ def export_artifact(
                 while idx < len(raw_lines) and _is_table_row(raw_lines[idx]):
                     table_lines.append(raw_lines[idx])
                     idx += 1
-                
                 parsed_table = _parse_table_block(table_lines)
                 if parsed_table:
                     hdr, data_rows = parsed_table
-                    rendered_tbl = _render_reportlab_table(hdr, data_rows, max_width=532.0, sources_map=sources_map)
+                    rendered_tbl = _render_reportlab_table(
+                        hdr, data_rows, max_width=504.0, sources_map=sources_map
+                    )
                     if rendered_tbl:
                         elements.append(Spacer(1, 4))
                         elements.append(rendered_tbl)
-                        elements.append(Spacer(1, 6))
+                        elements.append(Spacer(1, 8))
                 continue
 
             if line.startswith("### "):
@@ -341,54 +407,74 @@ def export_artifact(
                 elements.append(Paragraph(_md_to_reportlab_html(line[2:], sources_map=sources_map), h1_style))
             elif line.startswith(("- [ ]", "- [x]", "- [X]")):
                 is_checked = line.startswith(("- [x]", "- [X]"))
-                icon = "[X]" if is_checked else "[  ]"
+                icon = "[x]" if is_checked else "[ ]"
                 item_text = line[5:].strip()
-                elements.append(Paragraph(f"<b>{icon}</b> {_md_to_reportlab_html(item_text, sources_map=sources_map)}", bullet_style))
+                elements.append(
+                    Paragraph(
+                        f"<b>{icon}</b> {_md_to_reportlab_html(item_text, sources_map=sources_map)}",
+                        bullet_style,
+                    )
+                )
             elif line.startswith(("- ", "* ", "• ")):
                 bullet_text = line[2:].strip()
-                elements.append(Paragraph(f"• {_md_to_reportlab_html(bullet_text, sources_map=sources_map)}", bullet_style))
+                elements.append(
+                    Paragraph(f"• {_md_to_reportlab_html(bullet_text, sources_map=sources_map)}", bullet_style)
+                )
             elif re.match(r"^\d+\.\s+", line):
                 match = re.match(r"^(\d+)\.\s+(.*)", line)
                 num, item_text = match.group(1), match.group(2)
-                elements.append(Paragraph(f"<b>{num}.</b> {_md_to_reportlab_html(item_text, sources_map=sources_map)}", bullet_style))
+                elements.append(
+                    Paragraph(
+                        f"<b>{num}.</b> {_md_to_reportlab_html(item_text, sources_map=sources_map)}",
+                        bullet_style,
+                    )
+                )
             elif line.startswith(">"):
                 quote_text = line.lstrip("> ").strip()
                 elements.append(Paragraph(_md_to_reportlab_html(quote_text, sources_map=sources_map), quote_style))
             elif line.startswith("---"):
-                elements.append(Spacer(1, 4))
-                elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.black, spaceBefore=4, spaceAfter=8))
+                elements.append(HRFlowable(width="100%", thickness=0.4, color=rule, spaceBefore=6, spaceAfter=8))
             else:
                 elements.append(Paragraph(_md_to_reportlab_html(line, sources_map=sources_map), body_style))
-
             idx += 1
 
+        if cited_sources:
+            elements.append(PageBreak())
+            elements.append(Paragraph("Fuentes", source_heading_style))
+            elements.append(HRFlowable(width="100%", thickness=0.5, color=rule, spaceBefore=0, spaceAfter=14))
+            for i, s in cited_sources:
+                creator = s.get("creator") or "creator"
+                url = s.get("url") or ""
+                summary = (s.get("summary") or "").strip()
+                block = [
+                    Paragraph(
+                        f'<a name="source_{i}"/>[Source {i}]  @{creator}',
+                        source_title_style,
+                    )
+                ]
+                if summary:
+                    block.append(Paragraph(summary, source_body_style))
+                if url:
+                    block.append(Paragraph(f'<a href="{url}"><u>{url}</u></a>', source_url_style))
+                else:
+                    block.append(Spacer(1, 10))
+                elements.append(KeepTogether(block))
 
-        if sources:
-            elements.append(Spacer(1, 14))
-            elements.append(HRFlowable(width="100%", thickness=1, color=colors.black, spaceBefore=6, spaceAfter=8))
-            elements.append(Paragraph("<b>Cited Sources (Reels / Posts)</b>", h1_style))
-
-            for i, s in enumerate(sources, 1):
-                if s.get("cited", True):
-                    creator = s.get("creator", "creator")
-                    url = s.get("url", "")
-                    summary = s.get("summary", "")
-                    summary_html = f"<br/><font size=\"8.5\" color=\"#444444\"><i>- {summary}</i></font>" if summary else ""
-                    src_line = f'<a name="source_{i}"/><b>[Source {i}]</b> @{creator}: <a href="{url}"><u>{url}</u></a>{summary_html}'
-                    elements.append(Paragraph(src_line, body_style))
-
-                    elements.append(Spacer(1, 3))
-
-        doc.build(elements)
+        doc.build(elements, onFirstPage=_draw_page_number, onLaterPages=_draw_page_number)
     else:
-        full_text = f"# {title}\n\n{content}"
-        if sources:
-            full_text += "\n\n---\n### Cited Sources\n"
-            for i, s in enumerate(sources, 1):
-                if s.get("cited", True):
-                    summary_str = f" — *{s.get('summary')}*" if s.get("summary") else ""
-                    full_text += f"- **[Source {i}]** @{s.get('creator', '')}: {s.get('url', '')}{summary_str}\n"
-        out.write_text(full_text, encoding="utf-8")
+        lines = [f"# {display_title}", "", body.strip()]
+        if cited_sources:
+            lines.extend(["", "---", "", "## Fuentes", ""])
+            for i, s in cited_sources:
+                creator = s.get("creator") or ""
+                url = s.get("url") or ""
+                summary = (s.get("summary") or "").strip()
+                lines.append(f"- **[Source {i}]** @{creator}")
+                if summary:
+                    lines.append(f"  {summary}")
+                if url:
+                    lines.append(f"  {url}")
+                lines.append("")
+        out.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 
     return out.resolve()
-

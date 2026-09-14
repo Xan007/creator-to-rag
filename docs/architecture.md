@@ -1,82 +1,102 @@
-# System Architecture: InstaRAG
+# System architecture
 
-## Overview
+CreatorRAG is a **personal knowledge library**: a user owns libraries, libraries own sources, sources split into chunks, and questions are answered from retrieved chunks with citations.
 
-InstaRAG is a modular, multi-tenant knowledge ingestion pipeline and Retrieval-Augmented Generation (RAG) system. The application transforms public Instagram content (videos, carousels, infographics, captions, and user saved post exports) into structured, queryable knowledge. Extracted insights are indexed into a Pinecone vector database, while relational relationships (users, groups, and permissions) are maintained in an SQL database via SQLAlchemy.
+The promise is **traceable answers from selected Instagram and TikTok content**, not that a creator’s claims are true. YouTube URLs are rejected.
+
+```text
+User → Library (slug) → Source (platform, url, extracted_text)
+                      → Chunk[] → Pinecone + FTS
+Question → hybrid retrieve → LLM → cited answer
+         → PDF/Markdown only if artifact_type or export path is set
+```
+
+Groups (`Group` / `GroupPost`) and Instagram `Post` rows remain for older CLI/API paths. New work should use **Library / Source / Chunk**.
 
 ```mermaid
 flowchart TD
-    subgraph Multi-Tenant Identity & Scoped Access
-        U[Users] -->|Owns| G[Groups / RAG Agents]
-        G -->|Shared with| S[GroupShare Permissions]
-        S -->|Grants access to| U
+    subgraph Identity
+        U[User] -->|owns| L[Library]
+        U -->|owns| G[Group — optional]
     end
 
-    subgraph Global Deduplicated Ingestion Pipeline
-        IG[Global IG Profiles] --> Scraper[Apify Scraper]
-        ReelURL[Reel URLs] --> ScraperURL[Apify Post Scraper / yt-dlp]
-        SavedExport[User Saved Posts Export] --> SavedParser[Saved Posts Parser]
-        
-        Scraper --> Downloader[Media Downloader / yt-dlp]
-        ScraperURL --> Downloader
-        SavedParser --> Downloader
-        
-        Downloader --> Analyzer[Gemini Multimodal Analyzer / Whisper]
-        Analyzer --> PostDB[(Relational DB: SQLite / Postgres / Supabase)]
-        Analyzer --> Indexer[Pinecone Vector Indexer]
-        Indexer --> Pinecone[(Pinecone Vector DB)]
+    subgraph Ingest
+        IG[Instagram profile or URL] --> Scraper[Apify / yt-dlp]
+        TT[TikTok URL or profile] --> Conn[Connectors + Apify]
+        Scraper --> Media[Downloader]
+        Conn --> Media
+        Media --> Extract[Gemini multimodal or Whisper audio]
+        Extract --> SQL[(SQL sources + chunks)]
+        Extract --> Vec[Pinecone]
+        SQL --> FTS[SQLite FTS5 or Postgres FTS]
     end
 
-    subgraph Scoped Agents & Knowledge Retrieval
-        G --> GP[Group Posts Association]
-        GP -->|Filters by post_id list| QueryEngine[RAG Query Engine]
-        QueryEngine -->|Vector Search with Metadata Filter| Pinecone
-        Pinecone -->|Relevant Knowledge Chunks| Generator[Gemini Response Generator]
-        Generator --> Answer[Answer with Source Citations]
+    subgraph Query
+        Q[query / chat] --> Own[Ownership check]
+        Own --> Hybrid[RRF: dense + lexical]
+        Vec --> Hybrid
+        FTS --> Hybrid
+        Hybrid --> LLM[Gemini, Groq, or OpenAI]
+        LLM --> A[Cited answer]
+        LLM -.->|explicit flag only| Brief[PDF / Markdown brief]
     end
+
+    L --> SQL
 ```
 
 ---
 
-## Architectural Principles and Design Decisions
+## Design decisions
 
-### 1. Global Ingestion vs. User-Scoped RAG Agents
+### Libraries are the default scope
 
-In standard multi-user architectures, duplicate extraction across users causes significant API cost overhead and database bloat. InstaRAG separates content ingestion from user organization:
+A library has a human **slug** and an internal UUID. Queries pass `library`; the service resolves it and checks `owner_id`. Groups still isolate Instagram `post_id` lists for shared agents. They are optional.
 
-- **Global Ingestion (`IGProfile` and `Post`):** When an Instagram profile is scraped or a reel is ingested, the media is analyzed and embedded once globally. Every processed post receives a persistent record in the `posts` table and a corresponding vector in Pinecone.
-- **User-Scoped Agents (`Group` and `GroupPost`):** Users create isolated knowledge groups (such as "Low Carb Nutrition" or "Strength Training"). Users associate posts with their groups either manually or by applying LLM-driven interest filtering to an indexed creator's catalog.
-- **Zero Duplicate Extractions:** When multiple users track the same creator, save identical reels, or add overlapping content to distinct groups, the pipeline reuses existing extracted knowledge without re-downloading media or regenerating vector embeddings.
+### Sources and chunks
 
-### 2. Multi-Tenant Permissions and Collaboration
+- **Source:** one URL with platform, author, caption, extracted text, `content_hash`, embedding provider/dimension, status (`pending` / `indexed` / `failed`).
+- **Chunk:** retrieval unit. Re-index replaces chunks, updates FTS, and deletes stale Pinecone IDs.
+- **Skip:** if the URL is already `indexed` in that library, download and Gemini are skipped.
 
-- Each `Group` is owned by a `User`.
-- Owners can grant read access to other accounts via `GroupShare` records.
-- Access checks ensure that only group owners or authorized collaborators can execute queries, view member posts, or participate in chats against a specific agent.
+Instagram profile scrapes still write `Post` rows and may attach `library_id`.
 
-### 3. Identity and Database Agnosticism
+### Hybrid retrieval
 
-- **Database Independence:** Built using SQLAlchemy 2.0. By updating `INSTARAG_DATABASE_URL`, the application operates with local SQLite, PostgreSQL, Supabase, or Neon without schema modification.
-- **Identity Decoupling:** Users are represented by plain string identifiers (`user_id`). The core ingestion and query engines do not depend on any specific authentication provider, allowing integration with Clerk, Supabase Auth, Firebase, or custom JWT middlewares.
+1. Embed the question with the **same** pinned provider as the index (`CRAG_PINECONE_INDEX`).
+2. Dense search in Pinecone, filtered by `library_id` (or group `post_id` / creator).
+3. Lexical search over chunks (SQLite FTS5 or PostgreSQL FTS).
+4. Reciprocal Rank Fusion. Lexical-only if Pinecone is missing.
 
-### 4. Pinecone Vector Strategy
+Context packing groups hits by URL. Invented `[Source N]` numbers are stripped.
 
-- Vectors are indexed with rich metadata: `post_id`, `creator_username`, `url`, `type`, `original_description`, and `extracted_knowledge`.
-- When querying a specific Group, Pinecone executes a metadata filter: `{"post_id": {"$in": [list_of_group_post_ids]}}`.
-- When querying across a creator: `{"creator_username": {"$eq": "target_creator"}}`.
+### Embeddings stay pinned
+
+`EMBED_PROVIDER` must match the index dimension for the life of that index.
+
+### Gemini quota
+
+Extraction, Gemini embeddings, and Gemini answers share one project quota. `GEMINI_MAX_CONCURRENT_REQUESTS` (default 1) serializes those calls. Default extraction model: `gemini-3.5-flash`.
+
+Groq is for **answers only** (`RAG_PROVIDER=groq`, default `openai/gpt-oss-120b`). It cannot analyze video.
+
+### Optional document export
+
+PDF/Markdown briefs are **not** inferred from chat text. Generate them only with CLI `--artifact` / `--export` or API `artifact_type`. Types: `workout_plan`, `recipe_book`, `grocery_list`. Rendering lives in `src/rag/artifacts.py`.
 
 ---
 
-## Module Directory Structure
+## Layout
 
-| Directory | Layer | Description |
-|---|---|---|
-| `storage/` | Database Layer | SQLAlchemy models (`User`, `IGProfile`, `Post`, `Group`, `GroupPost`, `GroupShare`, `UserSavedPost`) and repository functions. |
-| `config/` | Configuration Layer | Entity helper modules (`users.py`, `groups.py`, `ig_profiles.py`, `settings.py`). |
-| `src/scraper/` | Ingestion Layer | Apify Actor integrations for creator profiles and post URLs. |
-| `src/downloader/` | Media Layer | Concurrent CDN media downloader with yt-dlp fallback. |
-| `src/analyzer/` | Analysis Layer | Google Gemini multimodal vision/audio understanding and Whisper transcription fallback. |
-| `src/indexer/` | Vector Layer | Pinecone vector embedding and index management. |
-| `src/rag/` | Retrieval Layer | Query engine with question condensation, score thresholding, and source citation logic. |
-| `src/pipeline/` | Orchestration Layer | Pipeline functions coordinating ingestion, group population, saved posts, and query execution. |
-| `src/api/` | Transport Layer | FastAPI REST application with background job workers and OpenAPI documentation. |
+| Path | Role |
+|---|---|
+| `storage/` | `User`, `Library`, `Source`, `Chunk`, plus legacy `Post` / `Group`. |
+| `src/connectors/` | TikTok/URL metadata; Apify TikTok actor. YouTube rejected. |
+| `src/scraper/` | Instagram profile and post Apify actors. |
+| `src/downloader/` | HTTP + parallel carousel download. |
+| `src/analyzer/` | Gemini extraction; Whisper transcription. |
+| `src/indexer/` | Chunking, embeddings, Pinecone, SQL status. |
+| `src/rag/` | Lexical retriever, hybrid RRF, query engine, briefs. |
+| `src/llm/` | Gemini (throttled), Groq/OpenAI factory. |
+| `src/pipeline/` | Library ingest, Instagram scrape, query. |
+| `src/api/` | FastAPI + background jobs. |
+| `main.py` | Typer CLI. |

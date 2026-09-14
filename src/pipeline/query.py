@@ -48,14 +48,11 @@ def query_knowledge(
             raise ValueError(f"User does not have permission to access group '{group_name}'.")
         post_ids = get_post_ids_in_group(group.id)
 
-    # Detect artifact intent from query if not explicitly forced
     intent = ArtifactIntentDetector.detect(
         query=question,
         explicit_artifact=artifact_type,
         explicit_export=export_path,
     )
-
-    resolved_artifact_type = artifact_type or (intent.artifact_type if intent.should_generate else None)
 
     engine = _get_query_engine()
     result = engine.query(
@@ -67,10 +64,9 @@ def query_knowledge(
         min_score=min_score,
         mode=mode,
         history=history,
-        artifact_type=resolved_artifact_type,
+        artifact_type=intent.artifact_type,
     )
 
-    # Delegate artifact creation if intent was detected or explicitly requested
     if intent.should_generate and result.get("answer"):
         artifact_meta = AgentArtifactDelegator.process_and_export(
             answer=result["answer"],

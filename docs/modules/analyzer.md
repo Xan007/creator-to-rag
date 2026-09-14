@@ -1,15 +1,16 @@
-# Analyzer Module (`src/analyzer/`)
+# Analyzer (`src/analyzer/`)
 
-## Responsibility
-Transforms raw media files (videos, audio, carousel slides, infographics) and post captions into dense, structured, factual knowledge representations.
+Turns downloaded media plus the caption into structured knowledge for indexing.
 
-## Implementations
+## Gemini (`gemini_analyzer.py`)
 
-### `GeminiAnalyzer` (`src/analyzer/gemini_analyzer.py`)
-- Leverages the official Google GenAI SDK (`google.genai`) with model **`gemini-3.6-flash`**.
-- Handles multimodal inputs:
-  - `.mp4` video files (watching visuals + transcribing spoken audio).
-  - `.jpg` / `.png` carousel slides and infographics (OCR + visual interpretation).
-- Waits for file state readiness using Gemini Files API.
-- Extracts dense actionable knowledge: exact ingredient grams, nutritional facts (calories, macros), workout steps, or specific advice.
-- **Ephemeral Storage Guarantee**: Files uploaded to Google Cloud are permanently deleted in a `finally:` block immediately after content generation.
+- Default model: `GEMINI_EXTRACTION_MODEL` (`gemini-3.5-flash`). Optional comma-separated `GEMINI_EXTRACTION_FALLBACK_MODELS`.
+- Uploads video/images via the Gemini Files API, waits until processing finishes, then extracts facts (numbers, steps, on-screen text, spoken points).
+- Shares `GEMINI_MAX_CONCURRENT_REQUESTS` with embeddings and Gemini answers. 404/429/503 retry with backoff, then the next model.
+- Uploaded files are deleted in a `finally` block.
+
+## Whisper (`whisper_analyzer.py`)
+
+Used when `engine` / analysis mode is `local_whisper` or `openai_whisper`. Transcribes audio only — no overlays or on-screen text. Library ingest uses this path when settings.engine is Whisper.
+
+Primary product path: Gemini multimodal.

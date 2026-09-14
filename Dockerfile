@@ -23,18 +23,18 @@ COPY storage ./storage
 COPY main.py ./
 
 # Create non-root user and persistent directories
-RUN useradd -m -u 1000 instarag \
+RUN useradd -m -u 1000 crag \
     && mkdir -p /data/config /data/raw /data/saved \
-    && chown -R instarag:instarag /app /data
+    && chown -R crag:crag /app /data
 
-USER instarag
+USER crag
 
 # Default environment variables for cloud portability
 ENV PYTHONUNBUFFERED=1 \
-    INSTARAG_DATA_DIR=/data \
-    INSTARAG_CONFIG_DIR=/data/config \
-    INSTARAG_HOST=0.0.0.0 \
-    INSTARAG_PORT=8000
+    CRAG_DATA_DIR=/data \
+    CRAG_CONFIG_DIR=/data/config \
+    CRAG_HOST=0.0.0.0 \
+    CRAG_PORT=8000
 
 VOLUME ["/data"]
 EXPOSE 8000

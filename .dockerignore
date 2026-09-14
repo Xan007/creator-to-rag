@@ -9,4 +9,6 @@ dist
 data
 docs
 instarag.egg-info
+creatorrag.egg-info
+
 .env

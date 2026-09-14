@@ -5,7 +5,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 from google import genai
 from pinecone import Pinecone
-from config.env import load_runtime_env
+from config.env import getenv, load_runtime_env
 from src.llm.factory import LLMClientFactory
 from src.rag.artifacts import get_artifact_system_prompt
 from src.rag.conversation import (
@@ -19,7 +19,7 @@ load_runtime_env()
 
 logger = logging.getLogger(__name__)
 
-INDEX_NAME = os.getenv("INSTARAG_PINECONE_INDEX", "instarag-v2")
+INDEX_NAME = getenv("PINECONE_INDEX", "creatorrag")
 EMBEDDING_MODEL = "gemini-embedding-001"
 
 _CITATION_RE = re.compile(r"Source\s*(\d+)", re.IGNORECASE)

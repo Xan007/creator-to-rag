@@ -29,9 +29,9 @@ def _from_model(model) -> UserInfo:
 
 
 def get_current_user_id() -> Optional[str]:
-    """Return the user ID from INSTARAG_USER env var (username lookup)."""
-    import os
-    username = os.getenv("INSTARAG_USER")
+    """Return the user ID from CRAG_USER env var (username lookup)."""
+    from config.env import getenv
+    username = getenv("USER")
     if not username:
         return None
     user = load_user(username)
@@ -39,9 +39,9 @@ def get_current_user_id() -> Optional[str]:
 
 
 def resolve_user(username: Optional[str]) -> Optional["UserInfo"]:
-    """Resolve a username to UserInfo, falling back to INSTARAG_USER env var."""
-    import os
-    name = username or os.getenv("INSTARAG_USER")
+    """Resolve a username to UserInfo, falling back to CRAG_USER env var."""
+    from config.env import getenv
+    name = username or getenv("USER")
     if not name:
         return None
     return load_user(name)

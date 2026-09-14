@@ -1,6 +1,13 @@
 from dataclasses import dataclass
-import re
 from typing import Optional
+
+VALID_ARTIFACT_TYPES = ("workout_plan", "recipe_book", "grocery_list")
+
+ARTIFACT_TITLES = {
+    "workout_plan": "Plan de entrenamiento",
+    "recipe_book": "Receta",
+    "grocery_list": "Lista de compras",
+}
 
 
 @dataclass
@@ -8,79 +15,43 @@ class ArtifactIntent:
     should_generate: bool
     artifact_type: Optional[str] = None
     output_format: str = "pdf"
-    suggested_filename: str = "documento.pdf"
-    title: str = "InstaRAG Document"
+    suggested_filename: str = "document.pdf"
+    title: str = "Documento"
+
+
+def normalize_artifact_type(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    key = value.strip().lower().replace("-", "_").replace(" ", "_")
+    if key not in VALID_ARTIFACT_TYPES:
+        raise ValueError(
+            "artifact must be one of: " + ", ".join(VALID_ARTIFACT_TYPES)
+        )
+    return key
 
 
 class ArtifactIntentDetector:
-    WORKOUT_KEYWORDS = [
-        "workout", "routine", "exercise", "training", "hypertrophy", "strength", "upper", "lower", "split",
-        "rutina", "entrenamiento", "ejercicio", "fuerza", "torso", "pierna",
-    ]
-    RECIPE_KEYWORDS = [
-        "recipe", "cooking", "cook", "dish", "meal", "dessert", "ingredients", "prep", "preparation",
-        "receta", "cocina", "plato", "comida", "postre", "ingredientes", "preparacion",
-    ]
-    GROCERY_KEYWORDS = [
-        "grocery", "shopping", "shopping list", "grocery list", "ingredients to buy", "market", "supermarket",
-        "mercado", "supermercado", "compras", "lista de compra", "ingredientes para comprar",
-    ]
-    EXPORT_KEYWORDS = [
-        "pdf", "download", "export", "document", "file", "print", "save", "markdown",
-        "descargar", "exportar", "documento", "archivo", "imprimir", "guarda", "mandamelo en",
-    ]
-    ACTION_VERBS = [
-        "create", "build", "make", "give", "generate", "plan", "compose", "draft",
-        "crea", "arma", "hazme", "dame", "genera",
-    ]
+    """Build an export intent only from explicit flags, never from chat wording."""
 
     @classmethod
-    def detect(cls, query: str, explicit_artifact: Optional[str] = None, explicit_export: Optional[str] = None) -> ArtifactIntent:
-        q_lower = query.lower().strip()
+    def detect(
+        cls,
+        query: str = "",
+        explicit_artifact: Optional[str] = None,
+        explicit_export: Optional[str] = None,
+    ) -> ArtifactIntent:
+        if not explicit_artifact and not explicit_export:
+            return ArtifactIntent(should_generate=False)
 
-        # Check format
-        is_md = bool(re.search(r"\b(markdown|\.md|notion|obsidian)\b", q_lower)) or (explicit_export and explicit_export.endswith(".md"))
-        output_format = "md" if is_md else "pdf"
-
-        # Explicit override
-        if explicit_export or explicit_artifact:
-            art_type = explicit_artifact or cls._classify_type(q_lower)
-            ext = ".md" if output_format == "md" else ".pdf"
-            filename = explicit_export or f"{art_type or 'document'}{ext}"
-            title = (art_type or "InstaRAG Document").replace("_", " ").title()
-            return ArtifactIntent(
-                should_generate=True,
-                artifact_type=art_type,
-                output_format=output_format,
-                suggested_filename=filename,
-                title=title,
-            )
-
-        # Automatic detection from query text
-        wants_export = any(k in q_lower for k in cls.EXPORT_KEYWORDS)
-        classified_type = cls._classify_type(q_lower)
-
-        if wants_export or (classified_type and any(k in q_lower for k in cls.ACTION_VERBS)):
-            ext = ".md" if output_format == "md" else ".pdf"
-            art_type = classified_type or "workout_plan"
-            filename = f"{art_type}{ext}"
-            title = art_type.replace("_", " ").title()
-            return ArtifactIntent(
-                should_generate=wants_export or bool(classified_type),
-                artifact_type=art_type,
-                output_format=output_format,
-                suggested_filename=filename,
-                title=title,
-            )
-
-        return ArtifactIntent(should_generate=False)
-
-    @classmethod
-    def _classify_type(cls, text: str) -> Optional[str]:
-        if any(k in text for k in cls.GROCERY_KEYWORDS):
-            return "grocery_list"
-        if any(k in text for k in cls.RECIPE_KEYWORDS):
-            return "recipe_book"
-        if any(k in text for k in cls.WORKOUT_KEYWORDS):
-            return "workout_plan"
-        return None
+        artifact_type = normalize_artifact_type(explicit_artifact)
+        output_format = "md" if (explicit_export or "").lower().endswith(".md") else "pdf"
+        ext = ".md" if output_format == "md" else ".pdf"
+        title = ARTIFACT_TITLES.get(artifact_type or "", "Documento")
+        filename = explicit_export or f"{artifact_type or 'document'}{ext}"
+        return ArtifactIntent(
+            should_generate=True,
+            artifact_type=artifact_type,
+            output_format=output_format,
+            suggested_filename=filename,
+            title=title,
+        )

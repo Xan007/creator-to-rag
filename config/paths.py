@@ -1,8 +1,9 @@
-import os
 from pathlib import Path
 
-CONFIG_DIR = Path(os.getenv("INSTARAG_CONFIG_DIR", Path.home() / ".instarag"))
-DATA_DIR = Path(os.getenv("INSTARAG_DATA_DIR", "data"))
+from config.env import getenv
+
+CONFIG_DIR = Path(getenv("CONFIG_DIR", str(Path.home() / ".crag")))
+DATA_DIR = Path(getenv("DATA_DIR", "data"))
 RAW_DIR = DATA_DIR / "raw"
 PROCESSED_DIR = DATA_DIR / "processed"
 SAVED_DIR = DATA_DIR / "saved"

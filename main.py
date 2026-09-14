@@ -4,8 +4,8 @@ from rich.console import Console
 import typer
 
 app = typer.Typer(
-    name="instarag",
-    help="instarag -- Personal multi-source creator knowledge library and grounded RAG.",
+    name="crag",
+    help="crag — CreatorRAG: personal multi-source creator knowledge library with grounded RAG.",
     add_completion=False,
 )
 
@@ -37,7 +37,7 @@ def _get_active_user(user_opt: Optional[str]) -> str:
         all_users = list_users()
         if len(all_users) == 1:
             return all_users[0].id
-        console.print("[bold red]User not specified and no default found. Use '--user <username>' or set INSTARAG_USER env var.[/bold red]")
+        console.print("[bold red]User not specified and no default found. Use '--user <username>' or set CRAG_USER env var.[/bold red]")
         raise typer.Exit(1)
     return user.id
 
@@ -297,13 +297,12 @@ def query_cmd(
     library: Optional[str] = typer.Option(None, "--library", "-l", help="Scope question to a personal library ID"),
     creator: Optional[str] = typer.Option(None, "--creator", "-c", help="Scope question to a creator"),
     mode: str = typer.Option("grounded_plus", "--mode", help="'grounded_plus' or 'strict'"),
-    artifact: Optional[str] = typer.Option(None, "--artifact", "-a", help="'workout_plan', 'recipe_book', or 'grocery_list'"),
-    export: Optional[str] = typer.Option(None, "--export", "-o", help="Export to file (.md or .pdf)"),
+    artifact: Optional[str] = typer.Option(None, "--artifact", "-a", help="Explicit export type: workout_plan, recipe_book, or grocery_list"),
+    export: Optional[str] = typer.Option(None, "--export", "-o", help="Write a .pdf or .md file. Required together with --artifact, or used alone to save the answer."),
     top_k: int = typer.Option(6, "--top-k", help="Top matches"),
     user: Optional[str] = typer.Option(None, "--user", "-u", help="Account username"),
 ):
     from src.pipeline import query_knowledge
-    from src.rag.artifacts import export_artifact
     uid = None
     if group or library:
         uid = _get_active_user(user)
@@ -364,7 +363,7 @@ def chat_cmd(
 
     history = []
     scope_desc = f"Group '{group}'" if group else (f"Library '{library}'" if library else (f"@{creator}" if creator else "Global Knowledge"))
-    console.print(f"[bold blue]InstaRAG Chat ({scope_desc})[/bold blue] — type 'exit' to quit.")
+    console.print(f"[bold blue]CreatorRAG Chat ({scope_desc})[/bold blue] — type 'exit' to quit.")
 
     while True:
         try:

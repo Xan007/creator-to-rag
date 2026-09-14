@@ -1,4 +1,3 @@
-import os
 import re
 from pathlib import Path
 from typing import Generator
@@ -13,9 +12,10 @@ _current_url = None
 
 
 def _get_database_url() -> str:
+    from config.env import getenv
     from config.paths import CONFIG_DIR
-    default_db = CONFIG_DIR / "instarag.db"
-    return os.getenv("INSTARAG_DATABASE_URL", f"sqlite:///{default_db}")
+    default_db = CONFIG_DIR / "crag.db"
+    return getenv("DATABASE_URL", f"sqlite:///{default_db}")
 
 
 def get_engine():

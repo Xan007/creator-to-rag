@@ -3,9 +3,9 @@ requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "instarag"
-version = "0.2.0"
-description = "Extract knowledge from Instagram profiles and saved posts into a vector database for RAG."
+name = "creatorrag"
+version = "0.3.0"
+description = "CreatorRAG (crag): turn selected Instagram and TikTok creator content into a personal knowledge library with cited RAG answers."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -26,8 +26,8 @@ dependencies = [
 ]
 
 [project.scripts]
-instarag = "main:main"
-instarag-api = "src.api.main:main"
+crag = "main:main"
+crag-api = "src.api.main:main"
 
 [dependency-groups]
 dev = [

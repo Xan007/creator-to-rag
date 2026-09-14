@@ -1,24 +1,24 @@
 version: '3.8'
 
 services:
-  instarag-api:
+  crag-api:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: instarag-api
+    container_name: crag-api
     ports:
-      - "${INSTARAG_PORT:-8000}:8000"
+      - "${CRAG_PORT:-8000}:8000"
     environment:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - PINECONE_API_KEY=${PINECONE_API_KEY}
       - APIFY_API_KEY=${APIFY_API_KEY}
-      - INSTARAG_DATABASE_URL=${INSTARAG_DATABASE_URL:-sqlite:////data/config/instarag.db}
-      - INSTARAG_API_KEY=${INSTARAG_API_KEY:-}
-      - INSTARAG_CORS_ORIGINS=${INSTARAG_CORS_ORIGINS:-*}
+      - CRAG_DATABASE_URL=${CRAG_DATABASE_URL:-sqlite:////data/config/crag.db}
+      - CRAG_API_KEY=${CRAG_API_KEY:-}
+      - CRAG_CORS_ORIGINS=${CRAG_CORS_ORIGINS:-*}
     volumes:
-      - instarag_data:/data
+      - crag_data:/data
     restart: unless-stopped
 
 volumes:
-  instarag_data:
+  crag_data:
     driver: local
