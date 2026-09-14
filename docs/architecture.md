@@ -5,11 +5,13 @@ CreatorRAG is a **personal knowledge library**: a user owns libraries, libraries
 The promise is **traceable answers from selected Instagram and TikTok content**, not that a creator’s claims are true. YouTube URLs are rejected.
 
 ```text
-User → Library (slug) → Source (platform, url, extracted_text)
+User → Library (slug) → Source (platform, url, extracted_text, ingest_status)
                       → Chunk[] → Pinecone + FTS
-Question → hybrid retrieve → LLM → cited answer
+Question → hybrid retrieve → hydrate caption-only hits → LLM → cited answer
          → PDF/Markdown only if artifact_type or export path is set
 ```
+
+Ingest is **caption-first** by default: captions are triaged with heuristics, then the RAG answer model (e.g. Groq) in the gray zone. Rich captions skip download (`caption_indexed`). Thin captions still download and run Gemini multimodal extraction (`full_indexed`).
 
 Groups (`Group` / `GroupPost`) and Instagram `Post` rows remain for older CLI/API paths. New work should use **Library / Source / Chunk**.
 

@@ -19,17 +19,25 @@ TIKTOK_ACTOR = os.getenv("APIFY_TIKTOK_ACTOR", "clockworks/full-tiktok-api-scrap
 def _items(client: ApifyClient, actor_id: str, run_input: Dict[str, Any], limit: int) -> Iterable[Dict[str, Any]]:
     if limit < 1:
         return []
+    from src.scraper.apify_cache import load_cache, save_cache
+
+    cache_payload = {"actor": actor_id, "input": run_input, "limit": limit}
+    cached = load_cache("tiktok", cache_payload, min_count=1)
+    if isinstance(cached, list):
+        return cached[:limit]
+
     run = client.actor(actor_id).call(
         run_input=run_input,
         max_total_charge_usd=float(os.getenv("APIFY_MAX_TOTAL_CHARGE_USD", "1.00")),
     )
     dataset_id = run.get("defaultDatasetId") if isinstance(run, dict) else run.default_dataset_id
-    count = 0
+    items: List[Dict[str, Any]] = []
     for item in client.dataset(dataset_id).iterate_items():
-        if count >= limit:
+        items.append(item)
+        if len(items) >= limit:
             break
-        count += 1
-        yield item
+    save_cache("tiktok", cache_payload, items)
+    return items
 
 
 def _normalize(item: Dict[str, Any], platform: str) -> Optional[NormalizedSource]:

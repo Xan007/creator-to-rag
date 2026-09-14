@@ -9,7 +9,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from config.env import getenv
+from config.env import getenv, load_runtime_env
+
+load_runtime_env()
 from config import saved as saved_config
 from config.groups import (
     GroupInfo,
@@ -95,6 +97,8 @@ class RunIn(BaseModel):
     library_id: Optional[str] = None
     newer_than: Optional[str] = None
     keep_media: bool = False
+    caption_only: bool = False
+    full_media: bool = False
 
 
 class AddReelIn(BaseModel):
@@ -102,6 +106,7 @@ class AddReelIn(BaseModel):
     urls: Optional[List[str]] = None
     creator: Optional[str] = None
     caption_only: bool = False
+    full_media: bool = False
     keep_media: bool = False
 
     def resolved_urls(self) -> List[str]:
@@ -114,6 +119,7 @@ class AddReelIn(BaseModel):
 class SavedProcessIn(BaseModel):
     limit: Optional[int] = None
     caption_only: bool = False
+    full_media: bool = False
     workers: int = 4
     user_id: Optional[str] = None
     username: Optional[str] = None
@@ -176,6 +182,7 @@ class LibrarySourceIn(BaseModel):
     url: Optional[str] = None
     urls: Optional[List[str]] = None
     caption_only: bool = False
+    full_media: bool = False
     keep_media: bool = False
 
     def resolved_urls(self) -> List[str]:
@@ -296,6 +303,7 @@ def add_library_sources(
         owner_id=user.id,
         urls=urls,
         caption_only=body.caption_only,
+        full_media=body.full_media,
         keep_media=body.keep_media,
     )
 
@@ -614,6 +622,8 @@ def job_run(body: RunIn, _: None = Depends(require_api_key)) -> JSONResponse:
         library_id=body.library_id,
         newer_than=body.newer_than,
         keep_media=body.keep_media,
+        caption_only=body.caption_only,
+        full_media=body.full_media,
     )
 
 
@@ -630,6 +640,7 @@ def job_add_reel(body: AddReelIn, _: None = Depends(require_api_key)) -> JSONRes
         urls=urls,
         creator=body.creator,
         caption_only=body.caption_only,
+        full_media=body.full_media,
         keep_media=body.keep_media,
     )
 
@@ -649,6 +660,7 @@ def job_saved_process(
         user_id=user.id,
         limit=body.limit,
         caption_only=body.caption_only,
+        full_media=body.full_media,
         workers=body.workers,
     )
 

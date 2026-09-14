@@ -128,6 +128,36 @@ def get_source_by_url(db: Session, library_id: str, url: str) -> Optional[Source
     )
 
 
+def list_sources_by_ids(db: Session, source_ids: List[str]) -> List[Source]:
+    if not source_ids:
+        return []
+    return db.query(Source).filter(Source.id.in_(source_ids)).all()
+
+
+def list_caption_indexed_post_ids(
+    db: Session,
+    library_id: str,
+    creator_username: Optional[str] = None,
+) -> List[str]:
+    """Instagram source ids are `{library_id}:{post_id}`."""
+    query = db.query(Source).filter(
+        Source.library_id == library_id,
+        Source.ingest_status == "caption_indexed",
+        Source.platform == "instagram",
+    )
+    if creator_username:
+        query = query.filter(Source.author == creator_username)
+    prefix = f"{library_id}:"
+    post_ids = []
+    for source in query.all():
+        if source.id.startswith(prefix):
+            post_ids.append(source.id[len(prefix):])
+        elif source.url:
+            post_ids.append(source.id)
+    return post_ids
+
+
+
 def add_source_to_library(db: Session, library_id: str, source_id: str) -> bool:
     existing = (
         db.query(LibrarySource)
@@ -165,7 +195,9 @@ def upsert_source(db: Session, source: Source) -> Source:
     existing = get_source(db, source.id)
     if existing:
         for field in ("library_id", "platform", "content_type", "url", "author", "title",
-                      "description", "extracted_text", "status", "indexed_at"):
+                      "description", "extracted_text", "status", "ingest_status",
+                      "content_hash", "chunk_version", "embedding_provider",
+                      "embedding_model", "embedding_dimension", "indexed_at"):
             value = getattr(source, field, None)
             if field != "library_id" and value not in (None, ""):
                 setattr(existing, field, value)

@@ -49,7 +49,9 @@ uv run crag library list
 uv run crag library add-url mis-creadores https://www.tiktok.com/@creator/video/123
 ```
 
-`--caption-only` skips download. `--keep-media` keeps files under `data/raw/`.
+`--caption-only` never downloads media. `--full` always downloads (skips caption-first triage). Default is caption-first: rich captions are indexed as text; thin captions download the video. Query hydrates any retrieved caption-only source before answering.
+
+`--keep-media` keeps files under `data/raw/`.
 
 ---
 
@@ -60,7 +62,7 @@ uv run crag instagram add fitness_coach --library mis-creadores --max-posts 20
 uv run crag instagram add https://www.instagram.com/reel/SHORTCODE/ --library mis-creadores
 ```
 
-`--newer-than` limits profile scrapes. Progress: `[3/20] Downloading` then `[3/20] Analyzing`.
+`--newer-than` limits profile scrapes. Default ingest is caption-first. `--full` forces media download. Query always hydrates retrieved caption-only hits (including the top hit) before answering.
 
 ---
 

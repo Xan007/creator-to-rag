@@ -50,6 +50,7 @@ class Source(Base):
     description = Column(Text, default="")
     extracted_text = Column(Text, default="")
     status = Column(String, default="indexed")
+    ingest_status = Column(String, default="full_indexed")
     content_hash = Column(String, default="")
     chunk_version = Column(String, default="v1")
     embedding_provider = Column(String, default="")

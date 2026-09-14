@@ -207,6 +207,12 @@ def test_job_saved_process_wiring(client, capture_submit):
     assert capture_submit["kwargs"]["caption_only"] is True
 
 
+def test_job_saved_process_full_media_wiring(client, capture_submit):
+    r = client.post("/jobs/saved-process", json={"limit": 2, "full_media": True})
+    assert r.status_code == 202
+    assert capture_submit["kwargs"]["full_media"] is True
+
+
 def test_job_run_requires_existing_profile(client):
     r = client.post("/jobs/run", json={"username": "_ghost_user_xyz"})
     assert r.status_code == 404

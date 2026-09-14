@@ -49,10 +49,18 @@ class ApifyPostScraper:
         self.client = ApifyClient(key)
 
     def get_posts_by_urls(self, urls: List[str]) -> List[Dict[str, Any]]:
+        from src.scraper.apify_cache import load_cache, save_cache
+
+        ordered = list(urls)
+        cache_payload = {"urls": sorted(ordered)}
+        cached = load_cache("ig_urls", cache_payload, min_count=len(ordered))
+        if isinstance(cached, list):
+            return cached
+
         run_input = {
             "resultsType": "posts",
-            "directUrls": list(urls),
-            "resultsLimit": len(urls),
+            "directUrls": ordered,
+            "resultsLimit": len(ordered),
             "addParentData": False,
         }
         run = self.client.actor(ACTOR_ID).call(run_input=run_input)
@@ -66,5 +74,6 @@ class ApifyPostScraper:
                 posts.append(_normalize_post(item))
             except ValueError:
                 continue
+        save_cache("ig_urls", cache_payload, posts)
         return posts
 

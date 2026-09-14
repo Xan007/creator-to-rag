@@ -12,10 +12,20 @@ _current_url = None
 
 
 def _get_database_url() -> str:
-    from config.env import getenv
+    from config.env import getenv, load_runtime_env
     from config.paths import CONFIG_DIR
+
+    load_runtime_env()
+    explicit = getenv("DATABASE_URL")
+    if explicit:
+        return explicit
     default_db = CONFIG_DIR / "crag.db"
-    return getenv("DATABASE_URL", f"sqlite:///{default_db}")
+    legacy_db = Path.home() / ".instarag" / "instarag.db"
+    if legacy_db.exists() and (
+        not default_db.exists() or default_db.stat().st_size < legacy_db.stat().st_size
+    ):
+        return f"sqlite:///{legacy_db.as_posix()}"
+    return f"sqlite:///{default_db}"
 
 
 def get_engine():
@@ -80,6 +90,7 @@ def _migrate(engine) -> None:
             add_col_if_missing("sources", "embedding_provider", "VARCHAR DEFAULT ''")
             add_col_if_missing("sources", "embedding_model", "VARCHAR DEFAULT ''")
             add_col_if_missing("sources", "embedding_dimension", "INTEGER")
+            add_col_if_missing("sources", "ingest_status", "VARCHAR DEFAULT 'full_indexed'")
         if "chunks" in tables:
             add_col_if_missing("chunks", "chunk_version", "VARCHAR DEFAULT 'v1'")
         if "libraries" in tables:

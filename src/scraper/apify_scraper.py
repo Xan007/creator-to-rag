@@ -133,15 +133,32 @@ class ApifyScraper:
 
         logger.info("Calling %s for @%s (requested: %d)", ACTOR_ID, username, requested)
 
-        run = self.client.actor(ACTOR_ID).call(run_input=run_input)
+        cache_payload = {
+            "username": username.lower(),
+            "newer_than": self.only_posts_newer_than or "",
+        }
+        items = None
+        from src.scraper.apify_cache import load_cache, save_cache
+
+        cached = load_cache("ig_profile", cache_payload, min_count=requested)
+        if isinstance(cached, list):
+            items = cached
+        else:
+            run = self.client.actor(ACTOR_ID).call(run_input=run_input)
+            dataset_id = run.get("defaultDatasetId") if isinstance(run, dict) else run.default_dataset_id
+            items = list(self.client.dataset(dataset_id).iterate_items())
+            save_cache("ig_profile", cache_payload, items)
+            if not items:
+                summary = self._read_run_summary(run)
+                if summary:
+                    logger.debug("RUN_SUMMARY: %s", json.dumps(summary, default=str)[:800])
 
         count = 0
         skipped_processed = 0
         skipped_old = 0
         no_media = 0
-        dataset_id = run.get("defaultDatasetId") if isinstance(run, dict) else run.default_dataset_id
         cutoff_seconds = parse_newer_than(self.only_posts_newer_than) if self.only_posts_newer_than else None
-        for item in self.client.dataset(dataset_id).iterate_items():
+        for item in items:
             if count >= limit:
                 break
 
@@ -178,11 +195,6 @@ class ApifyScraper:
 
         if self.verbose and skipped_old:
             logger.info("Skipped %d post(s) older than the newerThan boundary.", skipped_old)
-
-        if count == 0:
-            summary = self._read_run_summary(run)
-            if summary:
-                logger.debug("RUN_SUMMARY: %s", json.dumps(summary, default=str)[:800])
 
         logger.info(
             "Scrape complete: yielded %d new post(s), skipped %d processed, %d older, %d without media.",

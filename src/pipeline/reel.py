@@ -34,6 +34,7 @@ def add_reel(
     library_id: Optional[str] = None,
     caption_only: bool = False,
     keep_media: bool = False,
+    full_media: bool = False,
     progress: Progress = echo,
 ) -> Dict[str, Any]:
     from src.downloader.media_downloader import MediaDownloader
@@ -90,12 +91,17 @@ def add_reel(
 
                 existing_post = repo.get_post(db, reel_id)
                 if existing_post and existing_post.extracted_knowledge and existing_post.indexed_at:
-                    progress(f"Reel {reel_id} is already indexed in knowledge base.")
-                    if group_id:
-                        repo.add_post_to_group(db, group_id, reel_id)
-                        progress(f"Added existing reel {reel_id} to group.")
-                    added.append({"id": reel_id, "url": url, "already_indexed": True})
-                    continue
+                    source = None
+                    if library_id:
+                        source = repo.get_source(db, f"{library_id}:{reel_id}")
+                    already_full = not source or source.ingest_status != "caption_indexed"
+                    if already_full or not full_media:
+                        progress(f"Reel {reel_id} is already indexed in knowledge base.")
+                        if group_id:
+                            repo.add_post_to_group(db, group_id, reel_id)
+                            progress(f"Added existing reel {reel_id} to group.")
+                        added.append({"id": reel_id, "url": url, "already_indexed": True})
+                        continue
 
                 mode = settings.engine
                 is_whisper = mode in ("local_whisper", "openai_whisper")
@@ -103,15 +109,27 @@ def add_reel(
                     analyzer = WhisperAnalyzer(mode=mode) if is_whisper else GeminiAnalyzer()
                     indexer = PineconeIndexer()
 
+                ingest_status = "full_indexed"
                 try:
-                    if not caption_only and meta.get("media_items"):
+                    from src.analyzer.caption_triage import resolve_ingest_plan
+
+                    should_download, ingest_status = resolve_ingest_plan(
+                        description=description,
+                        caption_only=caption_only,
+                        full_media=full_media,
+                        platform="instagram",
+                    )
+                    if should_download and meta.get("media_items"):
                         downloaded_files = downloader.download_media_items(meta["media_items"], reel_id) or []
-                    if not caption_only:
+                    if should_download:
                         progress(f"[{position}/{total_urls}] Downloading media for {url}")
-                    if not downloaded_files and not caption_only:
+                    else:
+                        progress(f"[{position}/{total_urls}] Caption-only index for {url}")
+                    if should_download and not downloaded_files:
                         downloaded_files = download_with_ytdlp(meta["url"], reel_id, prefix="reel") or []
                 except Exception as e:
                     progress(f"Media download failed: {e} - using caption.")
+                    ingest_status = "caption_indexed"
 
                 progress(f"[{position}/{total_urls}] Analyzing content for {reel_id}...")
                 if downloaded_files:
@@ -127,6 +145,7 @@ def add_reel(
                     description=description,
                     extracted_text=extracted_text,
                     library_id=library_id,
+                    ingest_status=ingest_status,
                 )
 
                 if group_id:

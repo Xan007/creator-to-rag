@@ -20,6 +20,8 @@ def scrape_profile(
     library_id: Optional[str] = None,
     keep_media: bool = False,
     interests: Optional[str] = None,
+    caption_only: bool = False,
+    full_media: bool = False,
     progress: Progress = echo,
 ) -> Dict[str, Any]:
     from src.scraper.apify_scraper import ApifyScraper
@@ -40,7 +42,7 @@ def scrape_profile(
     progress(
         f"  Mode: {analysis_mode} | Max posts: {max_posts}"
         + (f" | newer than: {newer_than}" if newer_than else "")
-        + " | indexing all selected content"
+        + (" | full media" if full_media else " | caption-first")
     )
     if profile.last_scraped_at:
         dt = datetime.fromtimestamp(profile.last_scraped_at, tz=timezone.utc)
@@ -49,6 +51,8 @@ def scrape_profile(
     db = get_session()
     try:
         known_ids = set(repo.get_all_post_ids(db, creator_username=username))
+        if full_media and library_id:
+            known_ids -= set(repo.list_caption_indexed_post_ids(db, library_id, username))
     finally:
         db.close()
 
@@ -102,13 +106,26 @@ def scrape_profile(
             downloaded = []
             audio_sources = []
             try:
-                progress(f"  [{post_number}/{len(all_posts)}] Downloading: {post_type} {post_url}")
-                if is_whisper:
-                    video_urls = [m["url"] for m in media_items if m.get("type") == "video"]
-                    audio_sources = [post["url"]] if post.get("url") and video_urls else []
-                    audio_sources += [u for u in video_urls if u != post.get("url")]
-                elif media_items:
-                    downloaded = downloader.download_media_items(media_items, post_id) or []
+                from src.analyzer.caption_triage import resolve_ingest_plan
+
+                should_download, ingest_status = resolve_ingest_plan(
+                    description=description,
+                    caption_only=caption_only,
+                    full_media=full_media,
+                    platform="instagram",
+                )
+                if should_download:
+                    progress(f"  [{post_number}/{len(all_posts)}] Downloading: {post_type} {post_url}")
+                    if is_whisper:
+                        video_urls = [m["url"] for m in media_items if m.get("type") == "video"]
+                        audio_sources = [post["url"]] if post.get("url") and video_urls else []
+                        audio_sources += [u for u in video_urls if u != post.get("url")]
+                    elif media_items:
+                        downloaded = downloader.download_media_items(media_items, post_id) or []
+                else:
+                    progress(
+                        f"  [{post_number}/{len(all_posts)}] Caption-only index: {post_id}"
+                    )
 
                 progress(f"  [{post_number}/{len(all_posts)}] Analyzing content for {post_id}...")
                 if is_whisper:
@@ -126,6 +143,7 @@ def scrape_profile(
                     description=description,
                     extracted_text=extracted,
                     library_id=library_id,
+                    ingest_status=ingest_status,
                 )
                 progress(f"  ✓ Indexed {post_id}")
                 return "ok", post_id, None
