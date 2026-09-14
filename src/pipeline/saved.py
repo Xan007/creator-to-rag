@@ -94,22 +94,25 @@ def process_saved(
     analyzer = GeminiAnalyzer()
     indexer = PineconeIndexer()
 
-    def process_item(post) -> Tuple[str, str, Optional[Exception]]:
+    def process_item(position: int, post) -> Tuple[str, str, Optional[Exception]]:
         pid = post.id
         description = post.description or ""
         media_files = []
         try:
             if not caption_only and post.url:
+                progress(f"[{position}/{len(pending)}] Downloading saved post {pid}")
                 try:
                     media_files = download_with_ytdlp(post.url, pid) or []
                 except Exception as e:
                     progress(f"yt-dlp failed for {pid}: {e}")
 
             if media_files:
+                progress(f"[{position}/{len(pending)}] Analyzing saved post {pid}")
                 extracted_text = analyzer.extract_knowledge(media_files, description)
             else:
                 if not description:
                     return "skipped", pid, None
+                progress(f"[{position}/{len(pending)}] Analyzing saved post {pid}")
                 extracted_text = analyzer.extract_knowledge([], description)
 
             indexer.index_post(
@@ -134,7 +137,10 @@ def process_saved(
 
     progress(f"Processing {len(pending)} posts with {workers} workers...")
     with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = {executor.submit(process_item, post): post for post in pending}
+        futures = {
+            executor.submit(process_item, position, post): post
+            for position, post in enumerate(pending, 1)
+        }
         for future in as_completed(futures):
             status, pid, error = future.result()
             if status == "ok":

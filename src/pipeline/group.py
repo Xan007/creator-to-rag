@@ -10,7 +10,6 @@ from config.groups import (
     unshare_group,
 )
 from config.users import load_user
-from src.filter.interest_filter import InterestFilter
 from src.pipeline._common import Progress, echo
 from storage.db import get_session
 import storage.repositories as repo
@@ -44,24 +43,8 @@ def populate_group_from_profile(
         progress("All posts from this creator are already in the group.")
         return {"added": 0, "matched": 0, "total_candidates": 0}
 
-    matching_ids = set()
-    if interests and interests.strip():
-        progress(f"Filtering {len(candidates)} posts from @{creator_username} by interests: '{interests}'...")
-        post_dicts = [
-            {
-                "id": p.id,
-                "description": p.description or "",
-                "type": p.type or "Post",
-                "extracted_knowledge": p.extracted_knowledge or "",
-            }
-            for p in candidates
-        ]
-        interest_filter = InterestFilter()
-        matching_ids = set(interest_filter.filter_batch(post_dicts, interests))
-        progress(f"Interest filter matched {len(matching_ids)}/{len(candidates)} posts.")
-    else:
-        progress(f"No interest filter provided; adding all {len(candidates)} posts from @{creator_username}.")
-        matching_ids = {p.id for p in candidates}
+    progress(f"Adding all {len(candidates)} posts from @{creator_username}.")
+    matching_ids = {p.id for p in candidates}
 
     added_count = 0
     for pid in matching_ids:

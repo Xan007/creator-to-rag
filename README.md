@@ -10,15 +10,62 @@
 
 </div>
 
-InstaRAG is a modular, production-ready Instagram knowledge extraction and Retrieval-Augmented Generation (RAG) system. It ingests public creator profiles, standalone reels, and saved post archives, extracts multimodal knowledge using Google Gemini and Faster-Whisper, indexes semantic representations into Pinecone, and delivers grounded answers, multi-turn conversational agents, and structured document exports (PDF/Markdown).
+InstaRAG is a multi-source knowledge library and Retrieval-Augmented Generation (RAG) system. A user creates a library, adds Instagram or TikTok content, and asks questions grounded in the indexed material. The CLI remains useful for local use and FastAPI exposes the product workflow.
+
+The product promise is **traceable answers from selected sources**, not a guarantee that a creator's claims are factually correct. Answers include the original source URL so users can verify them.
+
+### Product model
+
+```text
+User → Library → Sources (Instagram, TikTok, URL) → Chunks → Dense + lexical retrieval → Cited chat answer
+```
+
+Groups and artifact exports remain available for backwards compatibility, but they are not required for the primary library/chat workflow.
+
+## Library workflow (recommended)
+
+The primary workflow does not require groups. Create one personal library, add
+URLs from multiple platforms, then query its ID:
+
+```bash
+instarag user create me
+instarag library create "Mis creadores"
+instarag library list
+instarag library add-url <LIBRARY_SLUG> \
+  https://www.tiktok.com/@creator/video/...
+instarag query "¿Qué recomienda sobre movilidad?" --library <LIBRARY_SLUG> --mode strict
+```
+
+The equivalent API flow is `POST /libraries`, `POST /libraries/{slug}/sources`
+and `POST /query` with `library`. UUIDs remain internal compatibility fields.
+Jobs are serialized and can be monitored
+through `/jobs/{job_id}`.
+
+Platform commands are explicit:
+
+```bash
+instarag instagram add creator_name --library mi-biblioteca --max-posts 20
+instarag tiktok add https://www.tiktok.com/@creator/video/... --library mi-biblioteca
+```
+
+The command name identifies the source platform; no platform is inferred.
+
+### Low-cost Apify connectors
+
+The TikTok actor is configurable through `APIFY_TIKTOK_ACTOR`. The MVP uses
+`clockworks/full-tiktok-api-scraper`, with `APIFY_MAX_TOTAL_CHARGE_USD=1.00`
+per run by default. Apify pricing and actor output can change; validate a
+small run before production use. The platform advertises $5 monthly usage for
+new accounts, subject to its current terms.
 
 ---
 
 ## Features
 
 - **Multimodal Video & Audio Extraction:** Transcribes speech, extracts on-screen text overlays, and captures structured facts (measurements, ingredients, exercise forms, and technical steps) using Google Gemini and Faster-Whisper.
-- **Hybrid Retrieval (Dense + BM25):** Combines dense vector similarity with BM25 sparse keyword ranking via Reciprocal Rank Fusion (RRF) for optimal precision and recall.
-- **Modular Multi-Provider Embeddings:** Pluggable embedding providers supporting Jina AI v3, Google Gemini (`text-embedding-004`), and 100% local ONNX FastEmbed (`BAAI/bge-small-en-v1.5`) with automatic fallback failover.
+- **Hybrid Retrieval (Dense + lexical):** Combines Pinecone dense retrieval with persistent SQLite FTS5 or database-native full-text search via Reciprocal Rank Fusion (RRF), including a lexical fallback when dense retrieval is unavailable.
+- **Modular Embeddings:** Jina AI v3, Google Gemini (`gemini-embedding-001`), and local FastEmbed (`all-MiniLM-L6-v2`). The active provider must remain consistent with the Pinecone index dimension.
+- **Configurable extraction:** `GEMINI_EXTRACTION_MODEL` is independent from answer generation. Keep `GEMINI_EXTRACTION_FALLBACK_MODELS` empty for predictable latency, or set explicit fallbacks when availability matters more than ingestion speed.
 - **Autonomous Agentic Delegation:** Automatically detects user intent to produce structured artifacts (`workout_plan`, `recipe_book`, `grocery_list`) and exports them to styled PDF or Markdown documents.
 - **Executive PDF Rendering Engine:** Generates clean, minimalist documents with structured tables, direct clickable links to Instagram reels, and concise source summaries.
 - **Multi-Tenant Scoped Groups:** Define isolated knowledge domains (e.g. Fitness, Cooking, Biohacking) and grant shared read permissions across accounts.
@@ -38,7 +85,7 @@ flowchart TD
     Embedder --> VectorDB[(Pinecone Vector DB)]
     
     UserQuery[User Question / Chat Session] --> Detector[Agent Intent Detector]
-    Detector --> Retriever[Hybrid Retriever: Pinecone + Local BM25]
+    Detector --> Retriever[Hybrid Retriever: Pinecone + Full-Library BM25]
     Retriever --> LLM[Gemini / Groq / OpenAI Compatible LLM]
     LLM --> Delegator[Agent Artifact Delegator]
     Delegator --> Output[Interactive Response + Styled PDF / Markdown]
@@ -74,11 +121,15 @@ OPENAI_API_KEY=your_openai_api_key
 JINA_API_KEY=your_jina_api_key
 
 # Model & Provider Configuration
-EMBED_PROVIDER=auto              # auto | jina | gemini | fastembed
+EMBED_PROVIDER=fastembed         # auto | jina | gemini | fastembed; keep fixed per index
+INSTARAG_PINECONE_INDEX=instarag-v2
 FILTER_PROVIDER=gemini           # gemini | openai | groq
-FILTER_MODEL=gemini-2.5-flash
-RAG_PROVIDER=gemini              # gemini | openai | groq
-RAG_MODEL=gemini-2.5-flash
+FILTER_MODEL=gemini-3.5-flash
+RAG_PROVIDER=groq                # gemini | openai | groq
+RAG_MODEL=openai/gpt-oss-120b    # Groq free/dev; llama-3.3-70b-versatile shut down 2026-08-16
+GEMINI_EXTRACTION_MODEL=gemini-3.5-flash
+GEMINI_MAX_CONCURRENT_REQUESTS=1  # throttle shared Gemini quota
+INGEST_WORKERS=3                 # bounded parallelism for URL ingestion
 
 # Database & Server Settings
 INSTARAG_DATABASE_URL=sqlite:////data/instarag.db  # or postgresql+psycopg://...
@@ -107,19 +158,16 @@ instarag user create <username>
 instarag user list
 ```
 
-### Profile Management & Scraping
+### Source Ingestion
 ```bash
-# Register a creator profile (optionally with default interests filter)
-instarag profile add <creator_username> --interests "calisthenics, mobility"
+# Add an Instagram creator
+instarag instagram add <creator_username> --library <library_slug> --max-posts 20
 
-# Scrape posts: indexes metadata, downloading media for matching interests
-instarag profile scrape <creator_username> --max-posts 50 --interests "calisthenics, mobility"
+# Add a single Instagram post or reel
+instarag instagram add <instagram_url> --library <library_slug>
 
-# Incremental update since last scrape date
-instarag profile update <creator_username>
-
-# List tracked creator profiles
-instarag profile list
+# Add a TikTok video or profile
+instarag tiktok add <tiktok_url> --library <library_slug>
 ```
 
 ### Scoped RAG Groups (Agents)
@@ -129,9 +177,6 @@ instarag group create <group_name> --desc "Topic Knowledge Base"
 
 # List groups accessible to the user
 instarag group list
-
-# Add posts from a creator profile (with optional topic filtering)
-instarag group add-from-profile <group_name> <creator_username> --interests "workout, hypertrophy"
 
 # Add a single reel or post URL / shortcode ID to a group
 instarag group add-post <group_name> https://instagram.com/reel/<shortcode>/

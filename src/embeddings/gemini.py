@@ -4,6 +4,7 @@ import time
 from typing import List, Optional
 from google import genai
 from config.env import load_runtime_env
+from src.llm.gemini_limits import GEMINI_REQUEST_LIMIT
 
 load_runtime_env()
 logger = logging.getLogger(__name__)
@@ -28,15 +29,19 @@ class GeminiEmbeddingProvider:
         return EMBEDDING_DIM
 
     def get_embedding(self, text: str, task_type: str = "query") -> List[float]:
+        return self.get_embeddings([text], task_type=task_type)[0]
+
+    def get_embeddings(self, texts: List[str], task_type: str = "document") -> List[List[float]]:
         t_type = "RETRIEVAL_QUERY" if task_type == "query" else "RETRIEVAL_DOCUMENT"
         for attempt in range(4):
             try:
-                res = self.client.models.embed_content(
-                    model=EMBEDDING_MODEL,
-                    contents=text,
-                    config=genai.types.EmbedContentConfig(task_type=t_type),
-                )
-                return res.embeddings[0].values
+                with GEMINI_REQUEST_LIMIT:
+                    res = self.client.models.embed_content(
+                        model=EMBEDDING_MODEL,
+                        contents=texts,
+                        config=genai.types.EmbedContentConfig(task_type=t_type),
+                    )
+                return [embedding.values for embedding in res.embeddings]
             except Exception as e:
                 err_str = str(e)
                 if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "Quota" in err_str:

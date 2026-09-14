@@ -7,7 +7,7 @@ name = "instarag"
 version = "0.2.0"
 description = "Extract knowledge from Instagram profiles and saved posts into a vector database for RAG."
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.12"
 dependencies = [
     "apify-client>=3.1.3",
     "fastembed>=0.8.0",
@@ -18,6 +18,7 @@ dependencies = [
     "python-dotenv>=1.2.3",
     "rank-bm25>=0.2.2",
     "reportlab>=5.0.1",
+    "requests>=2.32.0",
     "rich>=14.0.0",
     "sqlalchemy>=2.0",
     "typer>=0.27.1",

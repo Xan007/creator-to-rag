@@ -28,6 +28,9 @@ class JinaEmbeddingProvider:
         return JINA_DIM
 
     def get_embedding(self, text: str, task_type: str = "query") -> List[float]:
+        return self.get_embeddings([text], task_type=task_type)[0]
+
+    def get_embeddings(self, texts: List[str], task_type: str = "document") -> List[List[float]]:
         task = "retrieval.query" if task_type == "query" else "retrieval.passage"
         headers = {
             "Content-Type": "application/json",
@@ -37,7 +40,7 @@ class JinaEmbeddingProvider:
             "model": JINA_MODEL,
             "task": task,
             "dimensions": JINA_DIM,
-            "input": [text],
+            "input": texts,
         }
 
         for attempt in range(3):
@@ -48,7 +51,10 @@ class JinaEmbeddingProvider:
                     continue
                 response.raise_for_status()
                 data = response.json()
-                return data["data"][0]["embedding"]
+                return [
+                    item["embedding"]
+                    for item in sorted(data["data"], key=lambda item: item.get("index", 0))
+                ]
             except Exception as e:
                 if attempt == 2:
                     raise e

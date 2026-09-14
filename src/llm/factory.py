@@ -9,6 +9,10 @@ from src.llm.openai_compatible import OpenAICompatibleLLMClient
 load_runtime_env()
 logger = logging.getLogger(__name__)
 
+# Groq shut down llama-3.3-70b-versatile for free/developer on 2026-08-16.
+# Official replacement: https://console.groq.com/docs/deprecations
+GROQ_DEFAULT_MODEL = "openai/gpt-oss-120b"
+
 
 class FallbackLLMClient:
     def __init__(self, clients: List[BaseLLMClient]):
@@ -43,7 +47,7 @@ class LLMClientFactory:
             api_key = os.getenv("GROQ_API_KEY")
             if not api_key:
                 raise ValueError("GROQ_API_KEY environment variable is not set.")
-            default_model = os.getenv(f"{stage_upper}_MODEL", "llama-3.3-70b-versatile")
+            default_model = os.getenv(f"{stage_upper}_MODEL", GROQ_DEFAULT_MODEL)
             return OpenAICompatibleLLMClient(
                 api_key=api_key,
                 base_url="https://api.groq.com/openai/v1",
@@ -65,7 +69,7 @@ class LLMClientFactory:
             groq_client = OpenAICompatibleLLMClient(
                 api_key=os.getenv("GROQ_API_KEY"),
                 base_url="https://api.groq.com/openai/v1",
-                default_model="llama-3.3-70b-versatile",
+                default_model=GROQ_DEFAULT_MODEL,
             )
             clients.append(groq_client)
 
