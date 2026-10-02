@@ -10,7 +10,7 @@ This file used to be an early implementation plan (`profile add`, interest filte
 - Instagram (profile or URL) and TikTok (video or profile via Apify).
 - Gemini multimodal extraction; Whisper as audio-only engine.
 - Pinecone + FTS hybrid retrieval, pinned embeddings, library ownership.
-- CLI + FastAPI. Optional groups and saved-post import.
+- CLI + FastAPI. Optional saved-post import.
 
 ## Out of scope (on purpose)
 

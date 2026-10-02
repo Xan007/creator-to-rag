@@ -13,13 +13,12 @@ Question → hybrid retrieve → hydrate caption-only hits → LLM → cited ans
 
 Ingest is **caption-first** by default: captions are triaged with heuristics, then the RAG answer model (e.g. Groq) in the gray zone. Rich captions skip download (`caption_indexed`). Thin captions still download and run Gemini multimodal extraction (`full_indexed`).
 
-Groups (`Group` / `GroupPost`) and Instagram `Post` rows remain for older CLI/API paths. New work should use **Library / Source / Chunk**.
+Instagram `Post` rows remain for older ingestion paths. New work should use **Library / Source / Chunk**.
 
 ```mermaid
 flowchart TD
     subgraph Identity
         U[User] -->|owns| L[Library]
-        U -->|owns| G[Group — optional]
     end
 
     subgraph Ingest
@@ -52,7 +51,7 @@ flowchart TD
 
 ### Libraries are the default scope
 
-A library has a human **slug** and an internal UUID. Queries pass `library`; the service resolves it and checks `owner_id`. Groups still isolate Instagram `post_id` lists for shared agents. They are optional.
+A library has a human **slug** and an internal UUID. Queries pass `library`; the service resolves it and checks `owner_id`.
 
 ### Sources and chunks
 
@@ -65,7 +64,7 @@ Instagram profile scrapes still write `Post` rows and may attach `library_id`.
 ### Hybrid retrieval
 
 1. Embed the question with the **same** pinned provider as the index (`CRAG_PINECONE_INDEX`).
-2. Dense search in Pinecone, filtered by `library_id` (or group `post_id` / creator).
+2. Dense search in Pinecone, filtered by `library_id` or creator.
 3. Lexical search over chunks (SQLite FTS5 or PostgreSQL FTS).
 4. Reciprocal Rank Fusion. Lexical-only if Pinecone is missing.
 
@@ -91,7 +90,7 @@ PDF/Markdown briefs are **not** inferred from chat text. Generate them only with
 
 | Path | Role |
 |---|---|
-| `storage/` | `User`, `Library`, `Source`, `Chunk`, plus legacy `Post` / `Group`. |
+| `storage/` | `User`, `Library`, `Source`, `Chunk`, plus legacy `Post`. |
 | `src/connectors/` | TikTok/URL metadata; Apify TikTok actor. YouTube rejected. |
 | `src/scraper/` | Instagram profile and post Apify actors. |
 | `src/downloader/` | HTTP + parallel carousel download. |

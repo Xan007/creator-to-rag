@@ -1,6 +1,4 @@
 from typing import Any, Dict, List, Optional
-from config.groups import get_post_ids_in_group, load_group_by_name, user_can_access_group
-
 _ENGINE = None
 
 
@@ -15,7 +13,6 @@ def _get_query_engine():
 def query_knowledge(
     question: str,
     creator: Optional[str] = None,
-    group_name: Optional[str] = None,
     library_id: Optional[str] = None,
     user_id: Optional[str] = None,
     *,
@@ -29,7 +26,6 @@ def query_knowledge(
     from src.agent.intent import ArtifactIntentDetector
     from src.agent.delegator import AgentArtifactDelegator
 
-    post_ids = None
     if library_id and user_id:
         from storage.db import get_session
         import storage.repositories as repo
@@ -40,14 +36,6 @@ def query_knowledge(
                 raise ValueError("You do not have access to this library.")
         finally:
             db.close()
-    if group_name and user_id:
-        group = load_group_by_name(user_id, group_name)
-        if not group:
-            raise ValueError(f"Group '{group_name}' not found for user.")
-        if not user_can_access_group(user_id, group.id):
-            raise ValueError(f"User does not have permission to access group '{group_name}'.")
-        post_ids = get_post_ids_in_group(group.id)
-
     intent = ArtifactIntentDetector.detect(
         query=question,
         explicit_artifact=artifact_type,
@@ -59,7 +47,7 @@ def query_knowledge(
         question=question,
         creator=creator,
         library_id=library_id,
-        post_ids=post_ids,
+        post_ids=None,
         top_k=top_k,
         min_score=min_score,
         mode=mode,
@@ -78,6 +66,5 @@ def query_knowledge(
             result["artifact"] = artifact_meta
 
     return result
-
 
 

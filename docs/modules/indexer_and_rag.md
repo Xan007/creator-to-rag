@@ -17,7 +17,7 @@ Reciprocal Rank Fusion of Pinecone matches and FTS documents. Dense-optional: if
 
 ## Query engine (`src/rag/query_engine.py`)
 
-Filters: `library_id`, group `post_id` list, or `creator_username`. Condenses follow-up questions from chat history. Modes `grounded_plus` and `strict`. Sanitizes `[Source N]` against retrieved sources. Returns `timings_ms`.
+Filters: `library_id` or `creator_username`. Condenses follow-up questions from chat history. Modes `grounded_plus` and `strict`. Sanitizes `[Source N]` against retrieved sources. Returns `timings_ms`.
 
 Artifact **system prompts** apply only when `artifact_type` is passed in. Chat wording never selects a brief.
 

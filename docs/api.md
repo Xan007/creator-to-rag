@@ -30,10 +30,6 @@ Docker: `docker compose up -d --build`.
 | POST | `/libraries/{id}/sources` | Ingest `url` or `urls` asynchronously (`202`). Caption-first by default; `full_media` forces download. |
 | GET / POST | `/users` | List or create users |
 | GET / DELETE | `/users/{username}` | Get or delete a user |
-| GET / POST | `/groups` | Legacy groups |
-| GET / DELETE | `/groups/{group_id}` | Group detail or delete |
-| POST / DELETE | `/groups/{group_id}/posts` | Group membership |
-| POST / DELETE | `/groups/{group_id}/share` | Share access |
 | GET / POST | `/profiles` | Legacy Instagram profile registry |
 | GET / PATCH / DELETE | `/profiles/{username}` | Profile CRUD |
 | POST | `/profiles/{username}/reset` | Reset scrape history |
@@ -65,7 +61,7 @@ Heavy ingest routes return `202` with `{ "job_id", "status_url" }`. Poll `GET /j
 }
 ```
 
-Optional scopes: `library` or `library_id`, `creator`, `group_name`. Retrieved caption-only sources are hydrated (download + full index) before the answer is generated.
+Optional scopes: `library` or `library_id`, `creator`. Retrieved caption-only sources are hydrated (download + full index) before the answer is generated.
 
 Optional export (never inferred from `question`):
 

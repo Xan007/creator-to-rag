@@ -22,9 +22,6 @@ app.add_typer(instagram_app, name="instagram")
 tiktok_app = typer.Typer(help="Add TikTok videos or profiles to a library.")
 app.add_typer(tiktok_app, name="tiktok")
 
-group_app = typer.Typer(help="Manage scoped RAG agents / collections (Groups) and sharing.")
-app.add_typer(group_app, name="group")
-
 library_app = typer.Typer(help="Manage personal creator-content libraries.")
 app.add_typer(library_app, name="library")
 
@@ -149,85 +146,6 @@ def user_list():
         console.print(f"  - [bold]{u.username}[/bold] (ID: {u.id})")
 
 
-@group_app.command("create")
-def group_create_cmd(
-    name: str = typer.Argument(..., help="Name of the RAG agent/group"),
-    description: str = typer.Option("", "--desc", "-d", help="Description of the group agent"),
-    user: Optional[str] = typer.Option(None, "--user", "-u", help="Username owner"),
-):
-    from config.groups import create_group, load_group_by_name
-    uid = _get_active_user(user)
-    if load_group_by_name(uid, name):
-        console.print(f"[bold yellow]Group '{name}' already exists for this account.[/bold yellow]")
-        return
-    g = create_group(uid, name, description)
-    console.print(f"[bold green]Created RAG Agent group '{g.name}' (ID: {g.id}).[/bold green]")
-
-
-@group_app.command("list")
-def group_list_cmd(
-    user: Optional[str] = typer.Option(None, "--user", "-u", help="Username"),
-):
-    from config.groups import list_groups_for_user
-    uid = _get_active_user(user)
-    groups = list_groups_for_user(uid)
-    if not groups:
-        console.print("[yellow]No groups found. Create one with 'group create <name>'.[/yellow]")
-        return
-    console.print("[bold blue]Your RAG Agent Groups:[/bold blue]")
-    for g in groups:
-        owner_tag = "[green](owner)[/green]" if g.owner_id == uid else "[yellow](shared)[/yellow]"
-        console.print(f"  - [bold]{g.name}[/bold] {owner_tag} | Posts: {g.post_count} | Desc: {g.description or '-'}")
-
-
-@group_app.command("add-post")
-def group_add_post_cmd(
-    group_name: str = typer.Argument(..., help="Group name"),
-    url_or_id: str = typer.Argument(..., help="Post URL or shortcode ID"),
-    user: Optional[str] = typer.Option(None, "--user", "-u", help="Account username"),
-):
-    from config.groups import add_post_to_group, load_group_by_name
-    from src.pipeline import add_reel
-
-    uid = _get_active_user(user)
-    group = load_group_by_name(uid, group_name)
-    if not group:
-        console.print(f"[bold red]Group '{group_name}' not found.[/bold red]")
-        raise typer.Exit(1)
-
-    if url_or_id.startswith("http"):
-        add_reel([url_or_id], group_id=group.id, progress=console.print)
-    else:
-        add_post_to_group(group.id, url_or_id)
-        console.print(f"[bold green]Added post {url_or_id} to group '{group_name}'.[/bold green]")
-
-
-@group_app.command("share")
-def group_share_cmd(
-    group_name: str = typer.Argument(..., help="Group name to share"),
-    target_user: str = typer.Argument(..., help="Target username to grant access"),
-    user: Optional[str] = typer.Option(None, "--user", "-u", help="Owner username"),
-):
-    from config.groups import load_group_by_name, share_group
-    from config.users import load_user
-
-    uid = _get_active_user(user)
-    group = load_group_by_name(uid, group_name)
-    if not group or group.owner_id != uid:
-        console.print(f"[bold red]You are not the owner of group '{group_name}'.[/bold red]")
-        raise typer.Exit(1)
-
-    t_user = load_user(target_user)
-    if not t_user:
-        console.print(f"[bold red]Target user '{target_user}' does not exist.[/bold red]")
-        raise typer.Exit(1)
-
-    if share_group(group.id, t_user.id):
-        console.print(f"[bold green]Shared group '{group_name}' with '{target_user}'.[/bold green]")
-    else:
-        console.print(f"[yellow]Group was already shared with '{target_user}'.[/yellow]")
-
-
 @saved_app.command("import")
 def saved_import_cmd(
     path: Path = typer.Argument(..., help="Path to your Instagram zip export or saved_posts.json"),
@@ -316,7 +234,6 @@ def saved_process_cmd(
 @app.command("query")
 def query_cmd(
     question: str = typer.Argument(..., help="Question to ask"),
-    group: Optional[str] = typer.Option(None, "--group", "-g", help="Scope question to a specific RAG agent group"),
     library: Optional[str] = typer.Option(None, "--library", "-l", help="Scope question to a personal library ID"),
     creator: Optional[str] = typer.Option(None, "--creator", "-c", help="Scope question to a creator"),
     mode: str = typer.Option("grounded_plus", "--mode", help="'grounded_plus' or 'strict'"),
@@ -327,7 +244,7 @@ def query_cmd(
 ):
     from src.pipeline import query_knowledge
     uid = None
-    if group or library:
+    if library:
         uid = _get_active_user(user)
 
     try:
@@ -336,7 +253,6 @@ def query_cmd(
         res = query_knowledge(
             question,
             creator=creator,
-            group_name=group,
             library_id=resolved_library,
             user_id=uid,
             top_k=top_k,
@@ -372,7 +288,6 @@ def query_cmd(
 
 @app.command("chat")
 def chat_cmd(
-    group: Optional[str] = typer.Option(None, "--group", "-g", help="Scope chat to a specific RAG agent group"),
     library: Optional[str] = typer.Option(None, "--library", "-l", help="Scope chat to a personal library ID"),
     creator: Optional[str] = typer.Option(None, "--creator", "-c", help="Scope chat to a creator"),
     mode: str = typer.Option("grounded_plus", "--mode", help="'grounded_plus' or 'strict'"),
@@ -380,11 +295,11 @@ def chat_cmd(
 ):
     from src.pipeline import query_knowledge
     uid = None
-    if group or library:
+    if library:
         uid = _get_active_user(user)
 
     history = []
-    scope_desc = f"Group '{group}'" if group else (f"Library '{library}'" if library else (f"@{creator}" if creator else "Global Knowledge"))
+    scope_desc = f"Library '{library}'" if library else (f"@{creator}" if creator else "Global Knowledge")
     console.print(f"[bold blue]CreatorRAG Chat ({scope_desc})[/bold blue] — type 'exit' to quit.")
 
     while True:
@@ -398,7 +313,7 @@ def chat_cmd(
         try:
             from src.pipeline import resolve_library
             resolved_library = resolve_library(uid, library) if library else None
-            res = query_knowledge(q, creator=creator, group_name=group, library_id=resolved_library, user_id=uid, mode=mode, history=history)
+            res = query_knowledge(q, creator=creator, library_id=resolved_library, user_id=uid, mode=mode, history=history)
             console.print(f"\n[bold green]Assistant:[/bold green]\n{res['answer']}")
             timings = res.get("timings_ms")
             if timings:
@@ -425,4 +340,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

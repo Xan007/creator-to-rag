@@ -1,5 +1,4 @@
 from src.pipeline._common import Progress, echo
-from src.pipeline.group import populate_group_from_profile
 from src.pipeline.query import query_knowledge
 from src.pipeline.hydrate import hydrate_sources
 from src.pipeline.reel import add_reel
@@ -17,10 +16,8 @@ __all__ = [
     "add_reel",
     "query_knowledge",
     "hydrate_sources",
-    "populate_group_from_profile",
     "create_library",
     "list_libraries",
     "ingest_urls",
     "resolve_library",
 ]
-

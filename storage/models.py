@@ -120,35 +120,6 @@ class Post(Base):
 ProcessedPost = Post
 
 
-class Group(Base):
-    __tablename__ = "groups"
-
-    id = Column(String, primary_key=True)
-    owner_id = Column(String, ForeignKey("users.id"), nullable=False)
-    name = Column(String, nullable=False)
-    description = Column(Text, default="")
-    created_at = Column(Float, default=time.time)
-
-    __table_args__ = (
-        UniqueConstraint("owner_id", "name", name="uq_group_owner_name"),
-    )
-
-
-class GroupPost(Base):
-    __tablename__ = "group_posts"
-
-    group_id = Column(String, ForeignKey("groups.id"), primary_key=True)
-    post_id = Column(String, ForeignKey("posts.id"), primary_key=True)
-    added_at = Column(Float, default=time.time)
-
-
-class GroupShare(Base):
-    __tablename__ = "group_shares"
-
-    group_id = Column(String, ForeignKey("groups.id"), primary_key=True)
-    user_id = Column(String, ForeignKey("users.id"), primary_key=True)
-
-
 class UserSavedPost(Base):
     __tablename__ = "user_saved_posts"
 
@@ -191,4 +162,3 @@ class JobRecord(Base):
     result = Column(JSON, nullable=True)
     error = Column(Text, nullable=True)
     log = Column(JSON, default=list)
-

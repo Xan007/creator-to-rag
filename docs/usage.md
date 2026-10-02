@@ -90,7 +90,7 @@ uv run crag chat --library mis-creadores
 - `grounded_plus` (default): answer from sources; may add a labeled general-knowledge block.
 - `strict`: refuse if the library does not cover it.
 
-Legacy scopes: `--group` / `-g`, `--creator` / `-c`.
+The optional `--creator` / `-c` flag narrows retrieval to one creator.
 
 ---
 
@@ -113,20 +113,7 @@ uv run crag query "Lista de compras de esas recetas" --library mis-creadores \
 
 ---
 
-## 7. Groups (optional)
-
-```bash
-uv run crag group create HighProteinDiet --desc "Meal prep"
-uv run crag group add-post HighProteinDiet https://www.instagram.com/reel/C8xyz123/
-uv run crag group share HighProteinDiet alice
-uv run crag group list
-```
-
-Interest filtering and `group add-from-profile` were removed.
-
----
-
-## 8. Saved posts (optional)
+## 7. Saved posts (optional)
 
 ```bash
 uv run crag saved import /path/to/instagram-export.zip

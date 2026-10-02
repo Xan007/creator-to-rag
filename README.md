@@ -23,7 +23,7 @@ User → Library → Sources (Instagram, TikTok, URL)
       → Chunks → Dense (Pinecone) + lexical (FTS) → Cited chat answer
 ```
 
-Groups, saved-post import, and PDF/Markdown briefs are optional. Chat never infers a file export from wording.
+Saved-post import and PDF/Markdown briefs are optional. Chat never infers a file export from wording.
 
 ---
 
@@ -32,11 +32,11 @@ Groups, saved-post import, and PDF/Markdown briefs are optional. Chat never infe
 ```bash
 uv sync --extra api
 uv run crag user create me
-uv run crag library create "Mis creadores"
-uv run crag instagram add creator_name --library mis-creadores --max-posts 20
-uv run crag tiktok add https://www.tiktok.com/@creator/video/... --library mis-creadores
-uv run crag query "¿Qué recomienda sobre movilidad?" --library mis-creadores --mode strict
-uv run crag chat --library mis-creadores
+uv run crag library create "My creators"
+uv run crag instagram add creator_name --library my-creators --max-posts 20
+uv run crag tiktok add https://www.tiktok.com/@creator/video/... --library my-creators
+uv run crag query "What does this creator recommend for mobility?" --library my-creators --mode strict
+uv run crag chat --library my-creators
 ```
 
 API: `POST /libraries`, `POST /libraries/{slug}/sources`, `POST /query` with `library`. Use slugs; UUIDs stay internal.
@@ -46,8 +46,8 @@ Platform commands are explicit (`instagram`, `tiktok`). YouTube URLs are rejecte
 Optional formatted brief (explicit flags only):
 
 ```bash
-uv run crag query "Rutina de 4 días upper/lower" --library mis-creadores \
-  --artifact workout_plan -o rutina.pdf
+uv run crag query "Four-day upper/lower workout routine" --library my-creators \
+  --artifact workout_plan -o workout-plan.pdf
 ```
 
 `--artifact` is `workout_plan`, `recipe_book`, or `grocery_list`. `--export` / `-o` sets the path (`.pdf` or `.md`).
@@ -98,7 +98,7 @@ cd creator-to-rag
 uv sync --extra api
 ```
 
-Copy [`.env.example`](.env.example) to `.env`. Required: `GEMINI_API_KEY`, `PINECONE_API_KEY`, `APIFY_API_KEY`. Keep `EMBED_PROVIDER` and `CRAG_PINECONE_INDEX` aligned with an existing index (legacy `INSTARAG_*` vars still work as fallbacks).
+Copy [`.env.example`](.env.example) to `.env`. Required: `GEMINI_API_KEY`, `PINECONE_API_KEY`, `APIFY_API_KEY`. Keep `EMBED_PROVIDER` and `CRAG_PINECONE_INDEX` aligned with an existing index.
 
 Groq answers (optional):
 
@@ -121,9 +121,8 @@ Prefer `uv run crag` so you are not on a stale global install.
 | Ingest | `instagram add`, `tiktok add` |
 | Ask | `query --library <slug>`, `chat --library <slug>` |
 | Export | `query ... --artifact workout_plan -o file.pdf` |
-| Legacy | `group …`, `saved import` / `saved process` |
 
-There is no `profile` command group. Ingest is caption-first by default; `--full` always downloads media. Query hydrates retrieved caption-only sources before answering.
+Ingest is caption-first by default; `--full` always downloads media. Query hydrates retrieved caption-only sources before answering.
 
 Full examples: [docs/usage.md](docs/usage.md).
 
@@ -145,7 +144,7 @@ OpenAPI at `http://localhost:8000/docs`. Reference: [docs/api.md](docs/api.md).
 | `POST` | `/query` | Grounded RAG. Optional `library`, `artifact_type` (never inferred) |
 | `GET` | `/jobs/{job_id}` | Background job logs |
 
-Legacy group, profile, and saved-post routes remain. `CRAG_API_KEY` requires `X-API-Key`. Identity: `X-User-Id` / `X-Username`.
+`CRAG_API_KEY` requires `X-API-Key`. Identity: `X-User-Id` / `X-Username`.
 
 ---
 

@@ -8,9 +8,6 @@ from sqlalchemy import text
 
 from storage.models import (
     Chunk,
-    Group,
-    GroupPost,
-    GroupShare,
     IGProfile,
     LibrarySource,
     Library,
@@ -389,131 +386,6 @@ def get_all_post_ids(db: Session, creator_username: Optional[str] = None) -> Lis
     return [row[0] for row in q.all()]
 
 
-def get_group(db: Session, group_id: str) -> Optional[Group]:
-    return db.query(Group).filter(Group.id == group_id).first()
-
-
-def get_group_by_name(db: Session, owner_id: str, name: str) -> Optional[Group]:
-    return (
-        db.query(Group)
-        .filter(Group.owner_id == owner_id, Group.name == name)
-        .first()
-    )
-
-
-def list_groups_for_user(db: Session, user_id: str) -> List[Group]:
-    owned = db.query(Group).filter(Group.owner_id == user_id).all()
-    shared_ids = [
-        row.group_id
-        for row in db.query(GroupShare).filter(GroupShare.user_id == user_id).all()
-    ]
-    shared = db.query(Group).filter(Group.id.in_(shared_ids)).all() if shared_ids else []
-    return owned + [g for g in shared if g.id not in {o.id for o in owned}]
-
-
-def create_group(db: Session, owner_id: str, name: str, description: str = "") -> Group:
-    group = Group(
-        id=_new_uuid(),
-        owner_id=owner_id,
-        name=name,
-        description=description,
-        created_at=time.time(),
-    )
-    db.add(group)
-    db.commit()
-    db.refresh(group)
-    return group
-
-
-def delete_group(db: Session, group_id: str) -> bool:
-    group = get_group(db, group_id)
-    if not group:
-        return False
-    db.query(GroupPost).filter(GroupPost.group_id == group_id).delete()
-    db.query(GroupShare).filter(GroupShare.group_id == group_id).delete()
-    db.delete(group)
-    db.commit()
-    return True
-
-
-def add_post_to_group(db: Session, group_id: str, post_id: str) -> bool:
-    existing = (
-        db.query(GroupPost)
-        .filter(GroupPost.group_id == group_id, GroupPost.post_id == post_id)
-        .first()
-    )
-    if existing:
-        return False
-    db.add(GroupPost(group_id=group_id, post_id=post_id, added_at=time.time()))
-    db.commit()
-    return True
-
-
-def remove_post_from_group(db: Session, group_id: str, post_id: str) -> bool:
-    deleted = (
-        db.query(GroupPost)
-        .filter(GroupPost.group_id == group_id, GroupPost.post_id == post_id)
-        .delete()
-    )
-    db.commit()
-    return deleted > 0
-
-
-def get_post_ids_in_group(db: Session, group_id: str) -> List[str]:
-    return [
-        row.post_id
-        for row in db.query(GroupPost).filter(GroupPost.group_id == group_id).all()
-    ]
-
-
-def count_posts_in_group(db: Session, group_id: str) -> int:
-    return db.query(GroupPost).filter(GroupPost.group_id == group_id).count()
-
-
-def share_group(db: Session, group_id: str, user_id: str) -> bool:
-    existing = (
-        db.query(GroupShare)
-        .filter(GroupShare.group_id == group_id, GroupShare.user_id == user_id)
-        .first()
-    )
-    if existing:
-        return False
-    db.add(GroupShare(group_id=group_id, user_id=user_id))
-    db.commit()
-    return True
-
-
-def unshare_group(db: Session, group_id: str, user_id: str) -> bool:
-    deleted = (
-        db.query(GroupShare)
-        .filter(GroupShare.group_id == group_id, GroupShare.user_id == user_id)
-        .delete()
-    )
-    db.commit()
-    return deleted > 0
-
-
-def list_group_shares(db: Session, group_id: str) -> List[str]:
-    return [
-        row.user_id
-        for row in db.query(GroupShare).filter(GroupShare.group_id == group_id).all()
-    ]
-
-
-def user_can_access_group(db: Session, user_id: str, group_id: str) -> bool:
-    group = get_group(db, group_id)
-    if not group:
-        return False
-    if group.owner_id == user_id:
-        return True
-    return (
-        db.query(GroupShare)
-        .filter(GroupShare.group_id == group_id, GroupShare.user_id == user_id)
-        .first()
-        is not None
-    )
-
-
 def add_user_saved_post(db: Session, user_id: str, post_id: str, source_url: str = "") -> bool:
     existing = (
         db.query(UserSavedPost)
@@ -598,4 +470,3 @@ def append_job_log(db: Session, job_id: str, message: str) -> None:
         logs.append(entry)
         job.log = logs
         db.commit()
-

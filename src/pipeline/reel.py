@@ -30,7 +30,6 @@ def add_reel(
     urls: List[str],
     *,
     creator: Optional[str] = None,
-    group_id: Optional[str] = None,
     library_id: Optional[str] = None,
     caption_only: bool = False,
     keep_media: bool = False,
@@ -97,9 +96,6 @@ def add_reel(
                     already_full = not source or source.ingest_status != "caption_indexed"
                     if already_full or not full_media:
                         progress(f"Reel {reel_id} is already indexed in knowledge base.")
-                        if group_id:
-                            repo.add_post_to_group(db, group_id, reel_id)
-                            progress(f"Added existing reel {reel_id} to group.")
                         added.append({"id": reel_id, "url": url, "already_indexed": True})
                         continue
 
@@ -160,10 +156,6 @@ def add_reel(
                     ingest_status=ingest_status,
                 )
 
-                if group_id:
-                    repo.add_post_to_group(db, group_id, reel_id)
-                    progress(f"Added reel {reel_id} to group.")
-
                 added.append({"id": reel_id, "url": url, "already_indexed": False})
             except Exception as e:
                 failed.append({"url": url, "error": str(e)})
@@ -175,4 +167,3 @@ def add_reel(
         db.close()
 
     return {"added": added, "failed": failed}
-

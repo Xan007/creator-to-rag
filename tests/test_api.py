@@ -311,82 +311,12 @@ def test_user_endpoints_crud(client):
     assert client.get(f"/users/{uname}").status_code == 404
 
 
-def test_group_endpoints_crud_and_sharing(client):
-    u1 = f"_test_owner_{int(time.time())}"
-    u2 = f"_test_member_{int(time.time())}"
-    client.post("/users", json={"username": u1})
-    client.post("/users", json={"username": u2})
-
-    try:
-        # Create group
-        r = client.post("/groups", json={"name": "Fitness", "username": u1, "description": "Workout database"})
-        assert r.status_code == 201
-        gdata = r.json()
-        gid = gdata["id"]
-        assert gdata["name"] == "Fitness"
-
-        # Duplicate group for same user fails
-        assert client.post("/groups", json={"name": "Fitness", "username": u1}).status_code == 409
-
-        # List groups
-        r = client.get(f"/groups?username={u1}")
-        assert r.status_code == 200
-        groups = r.json()
-        assert any(g["id"] == gid for g in groups)
-
-        # Get group details
-        r = client.get(f"/groups/{gid}")
-        assert r.status_code == 200
-        assert r.json()["id"] == gid
-
-        # Share group with u2
-        r = client.post(f"/groups/{gid}/share", json={"target_username": u2})
-        assert r.status_code == 200
-        assert r.json()["shared"] is True
-
-        # u2 should see the group in their list
-        r2 = client.get(f"/groups?username={u2}")
-        assert any(g["id"] == gid for g in r2.json())
-
-        # Unshare group
-        user2_id = client.get(f"/users/{u2}").json()["id"]
-        r = client.delete(f"/groups/{gid}/share/{user2_id}")
-        assert r.status_code == 200
-
-        # Delete group
-        assert client.delete(f"/groups/{gid}").status_code == 200
-        assert client.get(f"/groups/{gid}").status_code == 404
-    finally:
-        client.delete(f"/users/{u1}")
-        client.delete(f"/users/{u2}")
-
-
 def test_user_context_headers_and_lazy_provisioning(client):
     ext_id = f"clerk_user_{int(time.time())}"
-    # Using X-User-Id header creates user on-the-fly and creates group
-    r = client.post(
-        "/groups",
-        json={"name": "Recipes", "description": "Cooking group"},
-        headers={"X-User-Id": ext_id},
-    )
-    assert r.status_code == 201
-    gdata = r.json()
-    assert gdata["owner_id"] == ext_id
-
-    # List groups using header
-    r = client.get("/groups", headers={"X-User-Id": ext_id})
+    # Using X-User-Id header creates user on-the-fly.
+    r = client.get("/libraries", headers={"X-User-Id": ext_id})
     assert r.status_code == 200
-    groups = r.json()
-    assert len(groups) >= 1
-    assert groups[0]["name"] == "Recipes"
-
-    # User details accessible
     r = client.get(f"/users/{ext_id}")
-    assert r.status_code == 200
     assert r.json()["id"] == ext_id
 
-    # Clean up
-    client.delete(f"/groups/{gdata['id']}")
     client.delete(f"/users/{ext_id}")
-
-

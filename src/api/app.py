@@ -13,19 +13,6 @@ from config.env import getenv, load_runtime_env
 
 load_runtime_env()
 from config import saved as saved_config
-from config.groups import (
-    GroupInfo,
-    add_post_to_group,
-    create_group,
-    delete_group,
-    get_post_ids_in_group,
-    load_group,
-    load_group_by_name,
-    list_groups_for_user,
-    remove_post_from_group,
-    share_group,
-    unshare_group,
-)
 from config.profiles import (
     ProfileConfig,
     delete_profile,
@@ -135,7 +122,6 @@ class QueryIn(BaseModel):
     library: Optional[str] = None
     library_id: Optional[str] = None
     creator: Optional[str] = None
-    group_name: Optional[str] = None
     user_id: Optional[str] = None
     mode: str = "grounded_plus"
     top_k: int = 6
@@ -150,25 +136,6 @@ class QueryIn(BaseModel):
 class UserIn(BaseModel):
     username: str = Field(min_length=1)
     user_id: Optional[str] = None
-
-
-class GroupIn(BaseModel):
-    name: str = Field(min_length=1)
-    description: str = ""
-    user_id: Optional[str] = None
-    username: Optional[str] = None
-
-
-class GroupPostIn(BaseModel):
-    post_id: Optional[str] = None
-    url: Optional[str] = None
-    creator: Optional[str] = None
-    interests: Optional[str] = None
-
-
-class GroupShareIn(BaseModel):
-    target_username: Optional[str] = None
-    target_user_id: Optional[str] = None
 
 
 class LibraryIn(BaseModel):
@@ -452,158 +419,6 @@ def remove_user(username: str, _: None = Depends(require_api_key)) -> Dict[str, 
     return {"deleted": username}
 
 
-@app.get("/groups", tags=["groups"])
-def get_groups(
-    user_id: Optional[str] = None,
-    username: Optional[str] = None,
-    current_user: Optional[UserInfo] = Depends(get_current_user),
-    _: None = Depends(require_api_key),
-) -> List[Dict[str, Any]]:
-    user = _resolve_api_user(user_id=user_id, username=username, current_user=current_user)
-    groups = list_groups_for_user(user.id)
-    return [
-        {
-            "id": g.id,
-            "owner_id": g.owner_id,
-            "name": g.name,
-            "description": g.description,
-            "created_at": g.created_at,
-            "post_count": g.post_count,
-            "shared_with": g.shared_with,
-        }
-        for g in groups
-    ]
-
-
-@app.post("/groups", status_code=201, tags=["groups"])
-def create_new_group(
-    body: GroupIn,
-    current_user: Optional[UserInfo] = Depends(get_current_user),
-    _: None = Depends(require_api_key),
-) -> Dict[str, Any]:
-    user = _resolve_api_user(user_id=body.user_id, username=body.username, current_user=current_user)
-    existing = load_group_by_name(user.id, body.name)
-    if existing:
-        raise HTTPException(status_code=409, detail=f"Group '{body.name}' already exists for user '{user.username}'.")
-    g = create_group(user.id, body.name, body.description)
-    return {
-        "id": g.id,
-        "owner_id": g.owner_id,
-        "name": g.name,
-        "description": g.description,
-        "created_at": g.created_at,
-        "post_count": g.post_count,
-        "shared_with": g.shared_with,
-    }
-
-
-@app.get("/groups/{group_id}", tags=["groups"])
-def get_group_details(group_id: str, _: None = Depends(require_api_key)) -> Dict[str, Any]:
-    g = load_group(group_id)
-    if not g:
-        raise HTTPException(status_code=404, detail=f"Group '{group_id}' not found.")
-    return {
-        "id": g.id,
-        "owner_id": g.owner_id,
-        "name": g.name,
-        "description": g.description,
-        "created_at": g.created_at,
-        "post_count": g.post_count,
-        "shared_with": g.shared_with,
-        "post_ids": get_post_ids_in_group(group_id),
-    }
-
-
-@app.delete("/groups/{group_id}", tags=["groups"])
-def remove_group(group_id: str, _: None = Depends(require_api_key)) -> Dict[str, str]:
-    if not delete_group(group_id):
-        raise HTTPException(status_code=404, detail=f"Group '{group_id}' not found.")
-    return {"deleted": group_id}
-
-
-@app.post("/groups/{group_id}/posts", tags=["groups"])
-def add_post_to_group_endpoint(
-    group_id: str,
-    body: GroupPostIn,
-    _: None = Depends(require_api_key),
-) -> Dict[str, Any]:
-    g = load_group(group_id)
-    if not g:
-        raise HTTPException(status_code=404, detail=f"Group '{group_id}' not found.")
-
-    if body.creator:
-        from src.pipeline.group import populate_group_from_profile
-        try:
-            res = populate_group_from_profile(g.owner_id, g.name, body.creator, interests=body.interests)
-            return {"status": "ok", "group_id": group_id, "result": res}
-        except ValueError as e:
-            raise HTTPException(status_code=422, detail=str(e))
-
-    if body.url:
-        from src.pipeline import add_reel
-        try:
-            add_reel([body.url], group_id=group_id)
-            return {"status": "ok", "group_id": group_id, "url": body.url}
-        except Exception as e:
-            raise HTTPException(status_code=422, detail=f"Failed to add reel: {e}")
-
-    if body.post_id:
-        added = add_post_to_group(group_id, body.post_id)
-        return {"status": "ok", "group_id": group_id, "post_id": body.post_id, "added": added}
-
-    raise HTTPException(status_code=422, detail="Provide 'post_id', 'url', or 'creator'.")
-
-
-@app.delete("/groups/{group_id}/posts/{post_id}", tags=["groups"])
-def remove_post_from_group_endpoint(
-    group_id: str,
-    post_id: str,
-    _: None = Depends(require_api_key),
-) -> Dict[str, Any]:
-    g = load_group(group_id)
-    if not g:
-        raise HTTPException(status_code=404, detail=f"Group '{group_id}' not found.")
-    removed = remove_post_from_group(group_id, post_id)
-    return {"group_id": group_id, "post_id": post_id, "removed": removed}
-
-
-@app.post("/groups/{group_id}/share", tags=["groups"])
-def share_group_endpoint(
-    group_id: str,
-    body: GroupShareIn,
-    _: None = Depends(require_api_key),
-) -> Dict[str, Any]:
-    g = load_group(group_id)
-    if not g:
-        raise HTTPException(status_code=404, detail=f"Group '{group_id}' not found.")
-
-    target_user = None
-    if body.target_username:
-        target_user = load_user(body.target_username)
-    elif body.target_user_id:
-        target_user = load_user_by_id(body.target_user_id)
-
-    if not target_user:
-        raise HTTPException(status_code=404, detail="Target user not found.")
-
-    shared = share_group(group_id, target_user.id)
-    return {"group_id": group_id, "target_user_id": target_user.id, "shared": shared}
-
-
-@app.delete("/groups/{group_id}/share/{user_id}", tags=["groups"])
-def unshare_group_endpoint(
-    group_id: str,
-    user_id: str,
-    _: None = Depends(require_api_key),
-) -> Dict[str, Any]:
-    g = load_group(group_id)
-    if not g:
-        raise HTTPException(status_code=404, detail=f"Group '{group_id}' not found.")
-
-    unshared = unshare_group(group_id, user_id)
-    return {"group_id": group_id, "unshared_user_id": user_id, "unshared": unshared}
-
-
 def _submit(kind: str, fn, **fn_kwargs) -> JSONResponse:
     job = manager.submit(kind, fn, **fn_kwargs)
     return JSONResponse(status_code=202, content={"job_id": job.id, "status_url": f"/jobs/{job.id}"})
@@ -854,12 +669,7 @@ def query(
             except ValueError as exc:
                 raise HTTPException(status_code=404, detail=str(exc))
             kwargs["user_id"] = user.id
-        if body.group_name:
-            kwargs["group_name"] = body.group_name
-            resolved_uid = body.user_id or (current_user.id if current_user else None)
-            if resolved_uid:
-                kwargs["user_id"] = resolved_uid
-        elif body.user_id:
+        if body.user_id:
             kwargs["user_id"] = body.user_id
         if body.artifact_type:
             kwargs["artifact_type"] = body.artifact_type
@@ -875,5 +685,3 @@ def query(
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Query failed: {e}")
-
-
