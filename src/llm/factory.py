@@ -29,7 +29,10 @@ class FallbackLLMClient:
         errors = []
         for client in self.clients:
             try:
-                return client.generate(messages, model=model, temperature=temperature, json_mode=json_mode)
+                client_model = model
+                if isinstance(client, GeminiLLMClient) and model and "/" in model:
+                    client_model = None
+                return client.generate(messages, model=client_model, temperature=temperature, json_mode=json_mode)
             except Exception as e:
                 logger.warning("LLM client %s failed (%s). Trying next provider...", type(client).__name__, e)
                 errors.append(str(e))
@@ -48,11 +51,15 @@ class LLMClientFactory:
             if not api_key:
                 raise ValueError("GROQ_API_KEY environment variable is not set.")
             default_model = os.getenv(f"{stage_upper}_MODEL", GROQ_DEFAULT_MODEL)
-            return OpenAICompatibleLLMClient(
+            groq_client = OpenAICompatibleLLMClient(
                 api_key=api_key,
                 base_url="https://api.groq.com/openai/v1",
                 default_model=default_model,
             )
+            try:
+                return FallbackLLMClient([groq_client, GeminiLLMClient()])
+            except Exception:
+                return groq_client
 
         if provider == "openai":
             api_key = os.getenv("OPENAI_API_KEY")

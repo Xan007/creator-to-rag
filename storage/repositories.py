@@ -164,7 +164,7 @@ def add_source_to_library(db: Session, library_id: str, source_id: str) -> bool:
     if existing:
         return False
     db.add(LibrarySource(library_id=library_id, source_id=source_id, added_at=time.time()))
-    if db.bind and db.bind.dialect.name == "sqlite":
+    if db.get_bind() and db.get_bind().dialect.name == "sqlite":
         source = get_source(db, source_id)
         chunks = db.query(Chunk).filter(Chunk.source_id == source_id).all()
         if source:
@@ -194,7 +194,7 @@ def upsert_source(db: Session, source: Source) -> Source:
         for field in ("library_id", "platform", "content_type", "url", "author", "title",
                       "description", "extracted_text", "status", "ingest_status",
                       "content_hash", "chunk_version", "embedding_provider",
-                      "embedding_model", "embedding_dimension", "indexed_at"):
+                      "embedding_model", "embedding_dimension", "published_at", "indexed_at"):
             value = getattr(source, field, None)
             if field != "library_id" and value not in (None, ""):
                 setattr(existing, field, value)
@@ -214,7 +214,7 @@ def upsert_source(db: Session, source: Source) -> Source:
 def replace_chunks(db: Session, source_id: str, library_id: str, chunks: List[Chunk]) -> None:
     db.query(Chunk).filter(Chunk.source_id == source_id).delete()
     db.add_all(chunks)
-    if str(db.bind.dialect.name) == "sqlite":
+    if db.get_bind() and str(db.get_bind().dialect.name) == "sqlite":
         source = get_source(db, source_id)
         if source:
             memberships = [
@@ -346,10 +346,13 @@ def upsert_post(db: Session, post: Post) -> Post:
         existing.url = post.url or existing.url
         existing.creator_username = post.creator_username or existing.creator_username
         existing.type = post.type or existing.type
+        existing.title = post.title or existing.title
         existing.description = post.description or existing.description
         existing.extracted_knowledge = post.extracted_knowledge or existing.extracted_knowledge
         existing.library_id = post.library_id or existing.library_id
         existing.source_id = post.source_id or existing.source_id
+        if post.published_at is not None:
+            existing.published_at = post.published_at
         if post.indexed_at is not None:
             existing.indexed_at = post.indexed_at
         db.commit()

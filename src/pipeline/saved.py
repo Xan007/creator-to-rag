@@ -140,13 +140,10 @@ def process_saved(
                 extracted_text = analyzer.extract_knowledge(
                     media_files, description, progress=step
                 )
-            elif not should_download:
-                if not description:
-                    return "skipped", pid, None
-                extracted_text = description
             else:
                 if not description:
                     return "skipped", pid, None
+                step("caption-only — extracting knowledge with AI")
                 extracted_text = analyzer.extract_knowledge(
                     [], description, progress=step
                 )

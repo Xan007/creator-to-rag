@@ -30,7 +30,7 @@ Saved-post import and PDF/Markdown briefs are optional. Chat never infers a file
 ## Quick start
 
 ```bash
-uv sync --extra api
+uv sync --extra api --extra ingest
 uv run crag user create me
 uv run crag library create "My creators"
 uv run crag instagram add creator_name --library my-creators --max-posts 20
@@ -70,6 +70,11 @@ uv run crag query "Four-day upper/lower workout routine" --library my-creators \
 
 ## Architecture
 
+The local ingestion/admin API (`crag-api`) and public query API
+(`crag-query-api`) have separate entrypoints and Docker targets. Build the
+public frontend with `VITE_APP_MODE=query`. Setup, authentication, SQL data
+transfer, and hosting choices: [deployment guide](docs/deployment.md).
+
 ```mermaid
 flowchart TD
     IG[Instagram] --> Extract
@@ -95,7 +100,7 @@ Python 3.12+, FFmpeg on `PATH`, [`uv`](https://github.com/astral-sh/uv).
 ```bash
 git clone https://github.com/Xan007/creator-to-rag.git
 cd creator-to-rag
-uv sync --extra api
+uv sync --extra api --extra ingest
 ```
 
 Copy [`.env.example`](.env.example) to `.env`. Required: `GEMINI_API_KEY`, `PINECONE_API_KEY`, `APIFY_API_KEY`. Keep `EMBED_PROVIDER` and `CRAG_PINECONE_INDEX` aligned with an existing index.
@@ -107,6 +112,46 @@ GROQ_API_KEY=...
 RAG_PROVIDER=groq
 RAG_MODEL=openai/gpt-oss-120b
 ```
+
+---
+
+## Web UI (frontend)
+
+The React SPA lives in [`frontend/`](frontend). It needs Node.js **20.19+** (22.12+
+recommended) and a running API.
+
+```bash
+# terminal 1 (repo root)
+uv run crag-api
+
+# terminal 2
+cd frontend
+npm ci
+cp .env.example .env    # Windows: copy .env.example .env
+npm run dev             # http://localhost:5173
+```
+
+During development the SPA calls `/api/*` and Vite proxies it to
+`http://127.0.0.1:8000/*`, so the browser stays same-origin and CORS never
+applies. Point it somewhere else with `VITE_API_PROXY_TARGET`.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `VITE_API_URL` | `/api` | Backend base URL (or the proxied `/api` prefix) |
+| `VITE_USER_ID` | `default` | Identity sent as `X-User-Id` (username or UUID) |
+| `VITE_API_KEY` | — | Sent as `X-API-Key` when `CRAG_API_KEY` is configured |
+| `VITE_API_PROXY_TARGET` | `http://127.0.0.1:8000` | Dev/preview proxy target |
+
+Production build:
+
+```bash
+cd frontend
+npm run build   # -> frontend/dist
+```
+
+Serve `dist/` behind the same origin that exposes the API under `/api`, or build
+with an absolute `VITE_API_URL`. Details and performance notes:
+[`frontend/README.md`](frontend/README.md).
 
 ---
 
@@ -145,6 +190,11 @@ OpenAPI at `http://localhost:8000/docs`. Reference: [docs/api.md](docs/api.md).
 | `GET` | `/jobs/{job_id}` | Background job logs |
 
 `CRAG_API_KEY` requires `X-API-Key`. Identity: `X-User-Id` / `X-Username`.
+
+CORS: `CRAG_CORS_ORIGINS` accepts a comma-separated list of browser origins and
+defaults to `*` (unauthenticated, header-based API; cookies are not used). In
+development prefer the Vite proxy and leave CORS alone. `/health` is public so
+the UI can detect an unreachable backend.
 
 ---
 

@@ -82,6 +82,7 @@ def test_does_not_ytdlp_when_cdn_works(tmp_path, monkeypatch):
         raise AssertionError("yt-dlp should not run")
 
     monkeypatch.setattr("src.pipeline._common.download_with_ytdlp", boom)
+    monkeypatch.setattr("shutil.which", lambda _prog: None)
 
     items = downloader.download_media_items(
         [{"type": "video", "url": "https://cdn.example/video.mp4"}],

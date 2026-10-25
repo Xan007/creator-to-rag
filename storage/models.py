@@ -57,6 +57,7 @@ class Source(Base):
     embedding_model = Column(String, default="")
     embedding_dimension = Column(Integer, nullable=True)
     created_at = Column(Float, default=time.time)
+    published_at = Column(Float, nullable=True)
     indexed_at = Column(Float, nullable=True)
 
 
@@ -110,8 +111,10 @@ class Post(Base):
     url = Column(String, default="")
     creator_username = Column(String, default="")
     type = Column(String, default="Post")
+    title = Column(String, default="")
     description = Column(Text, default="")
     extracted_knowledge = Column(Text, default="")
+    published_at = Column(Float, nullable=True)
     indexed_at = Column(Float, nullable=True)
     library_id = Column(String, nullable=True, index=True)
     source_id = Column(String, nullable=True, index=True)

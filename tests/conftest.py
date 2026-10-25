@@ -8,8 +8,8 @@ from pathlib import Path
 _TMP = tempfile.mkdtemp(prefix="crag_tests_")
 os.environ["CRAG_CONFIG_DIR"] = os.path.join(_TMP, "config")
 os.environ["CRAG_DATA_DIR"] = os.path.join(_TMP, "data")
-# Use in-memory SQLite for tests
-os.environ["CRAG_DATABASE_URL"] = "sqlite://"
+# Use file-backed SQLite in temp dir for multi-thread safety across tests
+os.environ["CRAG_DATABASE_URL"] = f"sqlite:///{(Path(_TMP) / 'test.db').as_posix()}"
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 

@@ -1,26 +1,54 @@
-# Indexer and RAG
+# Indexer and RAG Modules (`src/indexer/`, `src/rag/`)
 
-## Indexer (`src/indexer/pinecone_indexer.py`)
+These modules handle vectorization, storage, and hybrid retrieval across creator knowledge bases.
 
-- Index name: `CRAG_PINECONE_INDEX` (default `creatorrag`). Must exist and match `EMBED_PROVIDER` dimension.
-- Providers: Gemini `gemini-embedding-001` (3072), Jina v3 (1024), FastEmbed MiniLM (384). Pin one per index.
-- **Posts (legacy Instagram path):** one vector id `{creator}_{post_id}` with caption + extracted knowledge in metadata.
-- **Sources (library path):** one vector per chunk `source:{library_id}:{source_id}:{ordinal}`, content hash, chunk version, stale ids deleted on re-index. Status `indexed` only after Pinecone upsert succeeds.
+---
 
-## Lexical (`src/rag/lexical.py`)
+## 1. Pinecone Vector Indexer (`pinecone_indexer.py`)
 
-Persistent FTS over chunks: SQLite FTS5 or PostgreSQL FTS, scoped by `library_id`. Short in-process cache with invalidation on chunk replace.
+- **Index Name:** Defined by `INDEX_NAME` or `CRAG_PINECONE_INDEX` (default: `creatorrag`).
+- **Embedding Provider:** Google Gemini `text-embedding-004` (768 dimensions) or FastEmbed (`BAAI/bge-small-en-v1.5`).
+- **Post Preparation (`prepare_post_index`):**
+  - Resolves `post_title` via `extract_topic_from_knowledge()`.
+  - Instantiates the `Post` model with `title=post_title`.
+  - Instantiates the `Source` model with `title=post_title`.
+  - Attaches `title: post_title` within Pinecone vector metadata.
+- **Chunk Indexing:** Partitions long text segments using `chunk_text()` and assigns vector IDs using the format `source:{library_id}:{source_id}:{ordinal}`.
+- **Metadata Updates:** Supports bulk library reassignments (`update_posts_library()`) without re-embedding text payloads.
 
-## Hybrid (`src/rag/hybrid.py`)
+---
 
-Reciprocal Rank Fusion of Pinecone matches and FTS documents. Dense-optional: if Pinecone is missing, lexical still runs.
+## 2. Lexical Retrieval (`src/rag/lexical.py`)
 
-## Query engine (`src/rag/query_engine.py`)
+- Executes full-text search against the persistent SQLite FTS5 table (`chunks_fts`) or PostgreSQL `tsvector`.
+- Strictly scopes queries to `library_id` to enforce multi-tenant isolation.
+- Manages an in-process cache with automatic invalidation (`LexicalRetriever.invalidate(library_id)`) upon link, update, or deletion events.
 
-Filters: `library_id` or `creator_username`. Condenses follow-up questions from chat history. Modes `grounded_plus` and `strict`. Sanitizes `[Source N]` against retrieved sources. Returns `timings_ms`.
+---
 
-Artifact **system prompts** apply only when `artifact_type` is passed in. Chat wording never selects a brief.
+## 3. Hybrid Fusion (`src/rag/hybrid.py`)
 
-## Briefs (`src/rag/artifacts.py`)
+- Merges dense matches from Pinecone with sparse documents from SQLite FTS5.
+- Applies Reciprocal Rank Fusion (RRF) with configurable weighting.
+- Fault-tolerant fallback: if Pinecone is temporarily unavailable, query processing continues using local lexical search.
 
-Explicit CLI `--artifact` / `--export` or API `artifact_type`. Types: `workout_plan`, `recipe_book`, `grocery_list`. PDF is a knowledge brief (header, tables, numbered sources), not an auto-download from “hazme un PDF”.
+---
+
+## 4. Query Engine (`src/rag/query_engine.py`)
+
+- **Filtering:** Combines `$eq: library_id` with optional `creator_username` or `post_ids` constraints.
+- **Multi-Turn Question Condensation:** Leverages past conversation turns to rewrite contextual follow-up questions into standalone queries (`_condense_question`).
+- **Synthesis Modes:**
+  - `grounded_plus`: Creator-grounded response with labeled external knowledge addendum if required.
+  - `strict`: Zero-hallucination policy; explicitly refuses queries lacking sufficient support in creator content.
+- **Attribution:** Detects `[Source N]` references and flags each source record with `cited: true` or `cited: false`.
+- **Telemetry:** Returns detailed execution latency benchmarks in `timings_ms` (embedding, dense, lexical, hydration).
+
+---
+
+## 5. Artifact Generators (`src/rag/artifacts.py`)
+
+Generates structured briefs and exports when an `artifact_type` parameter is provided:
+- `workout_plan`: Structured exercise regimens with target muscle groups, sets, repetitions, and rest periods.
+- `recipe_book`: Culinary guides with ingredient lists, measurements, and numbered cooking instructions.
+- `grocery_list`: Categorized shopping checklists organized by store aisles or food categories.

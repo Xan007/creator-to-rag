@@ -189,6 +189,7 @@ class ApifyScraper:
                 "description": caption_text,
                 "hashtags": _extract_hashtags(caption_text),
                 "media_items": media_items,
+                "taken_at": item.get("taken_at"),
             }
             yield metadata
             count += 1

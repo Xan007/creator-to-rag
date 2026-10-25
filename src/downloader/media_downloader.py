@@ -59,6 +59,18 @@ class MediaDownloader:
             for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
                 try:
                     self._download_to_file(m_url, file_path)
+                    if m_type == "video" and permalink:
+                        import shutil
+                        import subprocess
+                        if shutil.which("ffprobe"):
+                            res = subprocess.run(
+                                ["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(file_path)],
+                                capture_output=True, text=True
+                            )
+                            if not res.stdout.strip():
+                                note("CDN video has no audio stream. Will attempt yt-dlp fallback...")
+                                return {"type": m_type, "path": str(file_path.resolve()), "missing_audio": True}
+
                     return {"type": m_type, "path": str(file_path.resolve())}
                 except Exception as e:
                     last_error = e
@@ -83,17 +95,24 @@ class MediaDownloader:
 
         wanted_video = any(item.get("type") == "video" for item in media_items)
         got_video = any(item.get("type") == "video" for item in results)
-        needs_fallback = bool(permalink) and (not results or (wanted_video and not got_video))
+        missing_audio = any(item.get("missing_audio") for item in results)
+        needs_fallback = bool(permalink) and (not results or (wanted_video and not got_video) or missing_audio)
         if not needs_fallback:
             return results
 
-        note("CDN failed, downloading with yt-dlp...")
+        note("CDN incomplete or missing audio, downloading with yt-dlp...")
         fallback = self._ytdlp_fallback(permalink, post_id)
         if not fallback:
-            note("yt-dlp fallback failed")
+            note("yt-dlp fallback failed, using original CDN download (might lack audio)")
             return results
         if wanted_video and not got_video:
             return [item for item in results if item.get("type") != "video"] + fallback
+        if missing_audio:
+            # We got a fallback video, discard the video-only CDN files
+            for item in results:
+                if item.get("missing_audio"):
+                    self._unlink(Path(item["path"]))
+            return [item for item in results if not item.get("missing_audio")] + fallback
         return fallback
 
     def _download_to_file(self, url: str, file_path: Path) -> None:

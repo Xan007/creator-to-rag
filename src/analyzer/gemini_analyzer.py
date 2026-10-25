@@ -51,9 +51,11 @@ Original Caption:
 Task:
 Extract ALL dense, factual, actionable knowledge shown OR spoken in the media, plus anything valuable from the caption.
 
+CRITICAL INSTRUCTION: You MUST listen to the AUDIO TRACK of the video. The spoken words often contain the most essential information (steps, exact quantities, tips, corrections). Do not ignore the audio!
+
 Hard rules:
 1. Copy every number EXACTLY as stated: reps x sets (e.g. 12x3), seconds, grams, ml, calories, temps, times. Never round, convert, or invent numbers.
-2. Transcribe the key points of the SPOKEN audio (steps, tips, warnings, corrections) - not filler.
+2. Transcribe the key points of the SPOKEN audio track (steps, tips, warnings, corrections) - not filler. Listen carefully!
 3. Read and include relevant ON-SCREEN text: overlays, lists, whiteboards, ingredient labels, exercise names.
 4. Write the output in the SAME language as the original caption.
 5. If the media adds nothing beyond the caption, say so explicitly on a "Notes:" line and extract only from the caption.
@@ -81,16 +83,37 @@ Output format (markdown, use these exact section headers; omit a section only if
 """
 
 
+
 def build_extraction_prompt(post_description: str) -> str:
     return EXTRACTION_PROMPT_TEMPLATE.format(post_description=post_description.strip())
 
 
+
+
 class GeminiAnalyzer:
     def __init__(self, api_key: Optional[str] = None):
-        key = api_key or os.getenv("GEMINI_API_KEY")
-        if not key:
-            raise ValueError("GEMINI_API_KEY environment variable is not set.")
-        self.client = genai.Client(api_key=key)
+        self.api_keys = []
+        if api_key:
+            self.api_keys = [k.strip() for k in api_key.split(",") if k.strip()]
+        else:
+            keys_str = os.getenv("GEMINI_API_KEYS")
+            if keys_str:
+                self.api_keys = [k.strip() for k in keys_str.split(",") if k.strip()]
+            else:
+                key = os.getenv("GEMINI_API_KEY")
+                if key:
+                    self.api_keys = [k.strip() for k in key.split(",") if k.strip()]
+
+        if not self.api_keys:
+            raise ValueError("GEMINI_API_KEY or GEMINI_API_KEYS environment variable is not set.")
+            
+        self.clients = [genai.Client(api_key=k) for k in self.api_keys]
+        self._client_index = 0
+
+    def _get_next_client(self):
+        client = self.clients[self._client_index]
+        self._client_index = (self._client_index + 1) % len(self.clients)
+        return client
 
     def extract_knowledge(
         self,
@@ -103,6 +126,7 @@ class GeminiAnalyzer:
             if progress:
                 progress(message)
 
+        client = self._get_next_client()
         uploaded_files = []
         local_temps = []
         try:
@@ -119,7 +143,7 @@ class GeminiAnalyzer:
                     local_temps.append(path)
                 size_mb = Path(path).stat().st_size / (1024 * 1024) if Path(path).exists() else 0
                 note(f"uploading {kind} to Gemini ({size_mb:.1f} MB)...")
-                gfile = self.client.files.upload(file=path)
+                gfile = client.files.upload(file=path)
 
                 if prepared.get("type") == "video":
                     started = time.time()
@@ -130,7 +154,7 @@ class GeminiAnalyzer:
                             note(f"Gemini processing video... {elapsed}s (this can take a minute)")
                             last_report = elapsed
                         time.sleep(2)
-                        gfile = self.client.files.get(name=gfile.name)
+                        gfile = client.files.get(name=gfile.name)
 
                     elapsed = int(time.time() - started)
                     if gfile.state.name == "FAILED":
@@ -147,16 +171,18 @@ class GeminiAnalyzer:
             for model_name in extraction_models():
                 for attempt in range(4):
                     try:
-                        chat = self.client.chats.create(model=model_name)
                         if not GEMINI_REQUEST_LIMIT.acquire(blocking=False):
                             note(f"waiting for Gemini slot ({model_name}, 1 extract at a time)...")
                             GEMINI_REQUEST_LIMIT.acquire()
                         try:
                             note(f"extracting with {model_name}...")
-                            response = chat.send_message(contents)
+                            response = client.models.generate_content(
+                                model=model_name,
+                                contents=contents,
+                            )
                         finally:
                             GEMINI_REQUEST_LIMIT.release()
-                        return response.text.strip()
+                        return (response.text or "").strip()
                     except Exception as e:
                         last_error = e
                         err_str = str(e)
@@ -167,6 +193,9 @@ class GeminiAnalyzer:
                             note(f"{model_name} not found, trying next model")
                             break
                         if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                            if len(self.clients) > 1:
+                                client = self._get_next_client()
+                                note("rotated to next Gemini API key after 429")
                             if attempt < 3:
                                 wait_seconds = min(30, 5 * (2 ** attempt))
                                 note(
@@ -177,8 +206,6 @@ class GeminiAnalyzer:
                                 note(f"rate limit persists on {model_name}, trying next model")
                                 break
                         else:
-                            # Authentication, invalid model, and malformed requests are
-                            # deterministic failures; retrying them only adds latency.
                             note(f"{model_name} failed: {e}")
                             break
 
@@ -192,7 +219,7 @@ class GeminiAnalyzer:
                     pass
             for gfile in uploaded_files:
                 try:
-                    self.client.files.delete(name=gfile.name)
+                    client.files.delete(name=gfile.name)
                 except Exception:
                     pass
 

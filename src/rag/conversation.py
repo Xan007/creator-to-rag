@@ -89,8 +89,14 @@ def condense_question(genai_client: Any, model: str, question: str, pairs: List[
     if not pairs:
         return question
     try:
-        chat = genai_client.chats.create(model=model)
-        response = chat.send_message(build_condense_prompt(question, pairs))
+        prompt = build_condense_prompt(question, pairs)
+        if hasattr(genai_client, "models") and hasattr(genai_client.models, "generate_content"):
+            response = genai_client.models.generate_content(model=model, contents=prompt)
+        elif hasattr(genai_client, "chats"):
+            chat = genai_client.chats.create(model=model)
+            response = chat.send_message(prompt)
+        else:
+            return question
         rewritten = (response.text or "").strip()
         return rewritten or question
     except Exception:

@@ -1,6 +1,7 @@
 """Product-level ingestion into a user's library."""
 
 import hashlib
+import logging
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
@@ -9,6 +10,8 @@ from src.connectors.url import extract_url_source
 from src.pipeline._common import Progress, download_with_ytdlp, echo, locked_progress, post_step
 from storage.db import get_session
 import storage.repositories as repo
+
+logger = logging.getLogger(__name__)
 
 
 def _source_id(url: str) -> str:
@@ -63,6 +66,8 @@ def ingest_urls(
     caption_only: bool = False,
     keep_media: bool = False,
     full_media: bool = False,
+    interests: Optional[str] = None,
+    max_posts: Optional[int] = None,
     progress: Progress = echo,
 ) -> Dict[str, Any]:
     """Index arbitrary public videos using one source pipeline."""
@@ -108,6 +113,21 @@ def ingest_urls(
         try:
             source = extract_url_source(url)
             sid = _source_id(url)
+            
+            if interests:
+                from src.filter.interest_filter import InterestFilter
+                step("Filtering by interests...")
+                fake_desc = source.description or source.title or ""
+                fake_post = {"id": sid, "description": fake_desc, "caption": fake_desc}
+                kept = filter_instance.filter_batch([fake_post], interests)
+                if sid not in kept:
+                    step("Skipped: Did not match interests")
+                    return {
+                        "added": [],
+                        "failed": [],
+                        "skipped": [{"url": url, "reason": "interest filter"}]
+                    }
+
             db = get_session()
             try:
                 existing = repo.get_source_by_url(db, library_id, source.url)
@@ -152,15 +172,21 @@ def ingest_urls(
                         else source.description
                     )
             else:
-                step("caption-only — skipping download")
-                extracted = source.description
+                step("caption-only — skipping download, extracting knowledge with AI")
+                extracted = (
+                    analyzer.extract_knowledge([], source.description, progress=step)
+                    if analyzer and source.description
+                    else (source.description or "")
+                )
+            from src.analyzer.title_generator import extract_topic_from_knowledge
+            post_title = extract_topic_from_knowledge(extracted) or source.title
             chunks = indexer.index_source(
                 source_id=sid,
                 library_id=library_id,
                 url=source.url,
                 platform=source.platform,
                 author=source.author,
-                title=source.title,
+                title=post_title,
                 description=source.description,
                 extracted_text=extracted,
                 ingest_status=ingest_status,
@@ -177,7 +203,7 @@ def ingest_urls(
                 platform = "tiktok" if "tiktok.com" in url else ""
                 if platform:
                     connector = ApifySocialConnector()
-                    discovered = getattr(connector, platform)([url], limit=20)
+                    discovered = getattr(connector, platform)([url], limit=max_posts or 20)
                     nested = ingest_urls(
                         library_id,
                         [item.url for item in discovered],
@@ -185,6 +211,8 @@ def ingest_urls(
                         caption_only=caption_only,
                         keep_media=keep_media,
                         full_media=full_media,
+                        interests=interests,
+                        max_posts=max_posts,
                         progress=progress,
                     )
                     return nested
@@ -209,3 +237,395 @@ def ingest_urls(
             added.extend(result["added"])
             failed.extend(result["failed"])
     return {"added": added, "failed": failed}
+
+def update_library(owner_id: str, library_id_or_slug: str, name: str, description: str = "") -> Dict[str, Any]:
+    db = get_session()
+    try:
+        lib = repo.get_library_by_slug(db, owner_id, library_id_or_slug)
+        if not lib:
+            lib = db.query(repo.Library).filter(repo.Library.id == library_id_or_slug, repo.Library.owner_id == owner_id).first()
+        if not lib:
+            raise ValueError("Library not found")
+        
+        lib.name = name
+        if description:
+            lib.description = description
+        db.commit()
+        return {"id": lib.id, "slug": lib.slug, "name": lib.name, "description": lib.description}
+    finally:
+        db.close()
+
+def delete_library(owner_id: str, library_id_or_slug: str) -> bool:
+    db = get_session()
+    try:
+        lib = repo.get_library_by_slug(db, owner_id, library_id_or_slug)
+        if not lib:
+            lib = db.query(repo.Library).filter(repo.Library.id == library_id_or_slug, repo.Library.owner_id == owner_id).first()
+        if not lib:
+            raise ValueError("Library not found")
+            
+        # Delete from Pinecone
+        try:
+            from src.indexer.pinecone_indexer import PineconeIndexer
+            indexer = PineconeIndexer()
+            indexer.delete_library(lib.id)
+        except Exception as e:
+            logger.warning("Pinecone library deletion notice: %s", e)
+            
+        # Delete from DB
+        db.query(repo.LibrarySource).filter(repo.LibrarySource.library_id == lib.id).delete()
+        db.query(repo.Chunk).filter(repo.Chunk.library_id == lib.id).delete()
+        # Unlink posts so they remain in the global pool (GET /posts)
+        db.query(repo.Post).filter(repo.Post.library_id == lib.id).update({repo.Post.library_id: None})
+        from sqlalchemy import text
+        try:
+            db.execute(text("DELETE FROM chunks_fts WHERE library_id = :lid"), {"lid": lib.id})
+        except Exception:
+            pass
+        db.delete(lib)
+        db.commit()
+        return True
+    finally:
+        db.close()
+
+def get_library_details(owner_id: str, library_id_or_slug: str) -> Dict[str, Any]:
+    db = get_session()
+    try:
+        lib = repo.get_library_by_slug(db, owner_id, library_id_or_slug)
+        if not lib:
+            lib = db.query(repo.Library).filter(repo.Library.id == library_id_or_slug, repo.Library.owner_id == owner_id).first()
+        if not lib:
+            raise ValueError("Library not found")
+            
+        sources = db.query(repo.Source).join(repo.LibrarySource).filter(repo.LibrarySource.library_id == lib.id).all()
+        library_sources = db.query(repo.LibrarySource).filter(repo.LibrarySource.library_id == lib.id).all()
+        source_pids = [ls.source_id.split(":")[-1] for ls in library_sources if ls.source_id]
+        from sqlalchemy import or_
+        posts = db.query(repo.Post).filter(
+            or_(
+                repo.Post.library_id == lib.id,
+                repo.Post.id.in_(source_pids)
+            )
+        ).all()
+        
+        return {
+            "id": lib.id,
+            "slug": lib.slug,
+            "name": lib.name,
+            "description": lib.description,
+            "owner_id": lib.owner_id,
+            "created_at": lib.created_at,
+            "sources": [
+                {
+                    "id": s.id,
+                    "platform": s.platform,
+                    "url": s.url,
+                    "author": s.author,
+                    "title": s.title,
+                    "status": s.status,
+                    "ingest_status": s.ingest_status,
+                    "published_at": s.published_at,
+                    "indexed_at": s.indexed_at,
+                }
+                for s in sources
+            ],
+            "posts": [
+                {
+                    "id": p.id,
+                    "url": p.url,
+                    "creator_username": p.creator_username,
+                    "type": p.type,
+                    "title": p.title,
+                    "description": p.description,
+                    "extracted_knowledge": p.extracted_knowledge,
+                    "published_at": p.published_at,
+                    "indexed_at": p.indexed_at,
+                }
+                for p in posts
+            ],
+        }
+    finally:
+        db.close()
+
+def remove_source(owner_id: str, library_id_or_slug: str, source_id: str) -> bool:
+    db = get_session()
+    try:
+        lib = repo.get_library_by_slug(db, owner_id, library_id_or_slug)
+        if not lib:
+            lib = db.query(repo.Library).filter(repo.Library.id == library_id_or_slug, repo.Library.owner_id == owner_id).first()
+        if not lib:
+            raise ValueError("Library not found")
+            
+        try:
+            from src.indexer.pinecone_indexer import PineconeIndexer
+            indexer = PineconeIndexer()
+            indexer.delete_source(source_id, library_id=lib.id)
+        except Exception as e:
+            logger.warning("Pinecone source deletion notice: %s", e)
+
+        db.query(repo.LibrarySource).filter(repo.LibrarySource.library_id == lib.id, repo.LibrarySource.source_id == source_id).delete()
+        db.query(repo.Chunk).filter(repo.Chunk.library_id == lib.id, repo.Chunk.source_id == source_id).delete()
+        from sqlalchemy import text
+        try:
+            db.execute(text("DELETE FROM chunks_fts WHERE chunk_id LIKE :prefix AND library_id = :lid"), {"prefix": f"{source_id}:%", "lid": lib.id})
+        except Exception:
+            pass
+        db.commit()
+        from src.rag.lexical import LexicalRetriever
+        LexicalRetriever.invalidate(lib.id)
+        return True
+    finally:
+        db.close()
+
+def remove_post(owner_id: str, library_id_or_slug: str, post_id: str) -> bool:
+    db = get_session()
+    try:
+        lib = repo.get_library_by_slug(db, owner_id, library_id_or_slug)
+        if not lib:
+            lib = db.query(repo.Library).filter(repo.Library.id == library_id_or_slug, repo.Library.owner_id == owner_id).first()
+        if not lib:
+            raise ValueError("Library not found")
+            
+        # Delete from Pinecone
+        try:
+            from src.indexer.pinecone_indexer import PineconeIndexer
+            indexer = PineconeIndexer()
+            indexer.delete_post(post_id, library_id=lib.id)
+        except Exception as e:
+            logger.warning("Pinecone post deletion notice: %s", e)
+            
+        source_id = f"{lib.id}:{post_id}"
+        db.query(repo.LibrarySource).filter(repo.LibrarySource.library_id == lib.id, repo.LibrarySource.source_id == source_id).delete()
+        db.query(repo.Chunk).filter(repo.Chunk.library_id == lib.id, repo.Chunk.source_id == source_id).delete()
+        # Unlink the post from this library instead of deleting from the global Post table
+        post = db.query(repo.Post).filter(repo.Post.id == post_id).first()
+        if post and post.library_id == lib.id:
+            post.library_id = None
+        from sqlalchemy import text
+        try:
+            db.execute(text("DELETE FROM chunks_fts WHERE chunk_id LIKE :prefix AND library_id = :lid"), {"prefix": f"{source_id}:%", "lid": lib.id})
+            db.execute(text("DELETE FROM chunks_fts WHERE chunk_id LIKE :prefix AND library_id = :lid"), {"prefix": f"{post_id}:%", "lid": lib.id})
+        except Exception:
+            pass
+        db.commit()
+        from src.rag.lexical import LexicalRetriever
+        LexicalRetriever.invalidate(lib.id)
+        return True
+    finally:
+        db.close()
+
+def remove_profile(owner_id: str, library_id_or_slug: str, profile_username: str) -> bool:
+    db = get_session()
+    try:
+        lib = repo.get_library_by_slug(db, owner_id, library_id_or_slug)
+        if not lib:
+            lib = db.query(repo.Library).filter(repo.Library.id == library_id_or_slug, repo.Library.owner_id == owner_id).first()
+        if not lib:
+            raise ValueError("Library not found")
+            
+        posts = db.query(repo.Post).filter(repo.Post.library_id == lib.id, repo.Post.creator_username == profile_username).all()
+        post_ids = [p.id for p in posts]
+        if post_ids:
+            try:
+                from src.indexer.pinecone_indexer import PineconeIndexer
+                indexer = PineconeIndexer()
+                indexer.delete_posts(post_ids, library_id=lib.id)
+            except Exception as e:
+                logger.warning("Pinecone profile posts deletion notice: %s", e)
+            
+            for pid in post_ids:
+                source_id = f"{lib.id}:{pid}"
+                db.query(repo.LibrarySource).filter(repo.LibrarySource.library_id == lib.id, repo.LibrarySource.source_id == source_id).delete()
+                db.query(repo.Chunk).filter(repo.Chunk.library_id == lib.id, repo.Chunk.source_id == source_id).delete()
+            # Unlink posts from this library, do NOT delete them from global Post catalog
+            db.query(repo.Post).filter(repo.Post.library_id == lib.id, repo.Post.creator_username == profile_username).update({repo.Post.library_id: None})
+            from sqlalchemy import text
+            try:
+                for pid in post_ids:
+                    db.execute(text("DELETE FROM chunks_fts WHERE chunk_id LIKE :prefix AND library_id = :lid"), {"prefix": f"{lib.id}:{pid}:%", "lid": lib.id})
+                    db.execute(text("DELETE FROM chunks_fts WHERE chunk_id LIKE :prefix AND library_id = :lid"), {"prefix": f"{pid}:%", "lid": lib.id})
+            except Exception:
+                pass
+            db.commit()
+            from src.rag.lexical import LexicalRetriever
+            LexicalRetriever.invalidate(lib.id)
+        return True
+    finally:
+        db.close()
+
+
+def link_posts_to_library(db: Any, post_ids: List[str], library_id: str) -> List[str]:
+    """Links existing global posts into a specific library, creating Source, LibrarySource,
+    Chunk and chunks_fts records so that library-scoped search and RAG retrieve them."""
+    import time
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from src.analyzer.title_generator import generate_post_title
+    from src.rag.chunking import chunk_text
+    from src.rag.lexical import LexicalRetriever
+    from storage.models import Chunk, Post, Source
+
+    posts = db.query(Post).filter(Post.id.in_(post_ids)).all()
+    if not posts:
+        return []
+
+    # Prevent duplication: skip posts that are already linked to this library
+    library_sources = db.query(repo.LibrarySource).filter(repo.LibrarySource.library_id == library_id).all()
+    already_linked_pids = {ls.source_id.split(":")[-1] for ls in library_sources if ls.source_id}
+    posts_to_link = [p for p in posts if p.id not in already_linked_pids]
+    if not posts_to_link:
+        return [p.id for p in posts]
+    posts = posts_to_link
+
+    # ------------------------------------------------------------------
+    # Step 1: Generate titles concurrently for posts that lack one.
+    # ------------------------------------------------------------------
+    posts_needing_titles = [p for p in posts if not (p.title or "").strip()]
+
+    if posts_needing_titles:
+        def _generate(post: Post) -> tuple[str, str]:
+            title = generate_post_title(
+                description=post.description or "",
+                extracted_knowledge=post.extracted_knowledge or "",
+                creator_username=post.creator_username or "",
+            )
+            return post.id, title
+
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            futures = {pool.submit(_generate, p): p for p in posts_needing_titles}
+            title_map: dict[str, str] = {}
+            for future in as_completed(futures):
+                try:
+                    pid, title = future.result()
+                    title_map[pid] = title
+                except Exception as exc:
+                    logger.warning("link_posts_to_library: title generation failed — %s", exc)
+
+        for post in posts_needing_titles:
+            if post.id in title_map:
+                post.title = title_map[post.id]
+
+    # ------------------------------------------------------------------
+    # Step 2: Create/update Source, LibrarySource, and Chunk records.
+    # ------------------------------------------------------------------
+    linked_ids: List[str] = []
+    for post in posts:
+        post.library_id = library_id
+        source_id = f"{library_id}:{post.id}"
+        post.source_id = source_id
+        linked_ids.append(post.id)
+
+        repo.upsert_source(
+            db,
+            Source(
+                id=source_id,
+                library_id=library_id,
+                platform="instagram",
+                content_type=(post.type or "reel").lower(),
+                url=post.url,
+                author=post.creator_username,
+                title=post.title or "",
+                description=post.description,
+                extracted_text=post.extracted_knowledge,
+                status="indexed",
+                ingest_status="full_indexed",
+                published_at=post.published_at,
+                indexed_at=post.indexed_at or time.time(),
+            ),
+        )
+        repo.add_source_to_library(db, library_id, source_id)
+
+        content = post.extracted_knowledge or post.description or ""
+        pieces = chunk_text(content)
+        if pieces:
+            chunk_rows = [
+                Chunk(
+                    id=f"{source_id}:{ordinal}",
+                    source_id=source_id,
+                    library_id=library_id,
+                    ordinal=ordinal,
+                    text=piece,
+                    token_count=len(piece.split()),
+                )
+                for ordinal, piece in enumerate(pieces)
+            ]
+            repo.replace_chunks(db, source_id, library_id, chunk_rows)
+
+    db.commit()
+    LexicalRetriever.invalidate(library_id)
+    return linked_ids
+
+
+def delete_global_posts(post_ids: List[str]) -> int:
+    """Permanently delete posts, their linked sources, chunks, and vectors from the global system."""
+    if not post_ids:
+        return 0
+
+    db = get_session()
+    try:
+        posts = db.query(repo.Post).filter(repo.Post.id.in_(post_ids)).all()
+        if not posts:
+            return 0
+
+        post_urls = [p.url for p in posts if p.url]
+        direct_pids = [p.id for p in posts]
+
+        # Find all sources representing these posts across all libraries
+        from sqlalchemy import or_
+        source_filters = [
+            repo.Source.id.in_(direct_pids),
+            repo.Source.id.in_([f"post:{pid}" for pid in direct_pids]),
+        ]
+        if post_urls:
+            source_filters.append(repo.Source.url.in_(post_urls))
+        for pid in direct_pids:
+            source_filters.append(repo.Source.id.like(f"%:{pid}"))
+
+        matching_sources = db.query(repo.Source).filter(or_(*source_filters)).all()
+        matching_source_ids = list({s.id for s in matching_sources})
+        impacted_library_ids = list({s.library_id for s in matching_sources if s.library_id})
+
+        # 1. Delete chunks
+        if matching_source_ids:
+            db.query(repo.Chunk).filter(repo.Chunk.source_id.in_(matching_source_ids)).delete(synchronize_session=False)
+
+            # SQLite FTS cleanup
+            if db.get_bind() and str(db.get_bind().dialect.name) == "sqlite":
+                for sid in matching_source_ids:
+                    db.execute(
+                        text("DELETE FROM chunks_fts WHERE chunk_id LIKE :prefix"),
+                        {"prefix": f"{sid}:%"},
+                    )
+
+            # 2. Delete library_sources relations
+            db.query(repo.LibrarySource).filter(repo.LibrarySource.source_id.in_(matching_source_ids)).delete(synchronize_session=False)
+
+            # 3. Delete sources
+            db.query(repo.Source).filter(repo.Source.id.in_(matching_source_ids)).delete(synchronize_session=False)
+
+        # 4. Delete saved posts references
+        db.query(repo.UserSavedPost).filter(repo.UserSavedPost.post_id.in_(direct_pids)).delete(synchronize_session=False)
+
+        # 5. Delete posts
+        deleted_count = db.query(repo.Post).filter(repo.Post.id.in_(direct_pids)).delete(synchronize_session=False)
+
+        db.commit()
+
+        # Invalidate lexical indexers for impacted libraries
+        for lib_id in impacted_library_ids:
+            LexicalRetriever.invalidate(lib_id)
+
+        # Clean up Pinecone vectors if configured
+        try:
+            from src.indexer.pinecone_indexer import PineconeIndexer
+            indexer = PineconeIndexer()
+            indexer.delete_posts(direct_pids)
+            for sid in matching_source_ids:
+                indexer.delete_source(sid)
+        except Exception as e:
+            logger.warning("Pinecone deletion skipped or failed: %s", e)
+
+        return deleted_count
+    finally:
+        db.close()
+
+

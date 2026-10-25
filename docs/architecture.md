@@ -1,103 +1,93 @@
-# System architecture
+# CreatorRAG Architecture: Decoupled Ingestion and Query Serving
 
-CreatorRAG is a **personal knowledge library**: a user owns libraries, libraries own sources, sources split into chunks, and questions are answered from retrieved chunks with citations.
+CreatorRAG is designed around a decoupled architecture inspired by the Command and Query Responsibility Segregation (CQRS) pattern. High-throughput ingestion, media downloading, and multimodal LLM parsing run on worker nodes, while lightweight vector retrieval and conversational answer synthesis execute on public, low-latency API instances.
 
-The promise is **traceable answers from selected Instagram and TikTok content**, not that a creator’s claims are true. YouTube URLs are rejected.
+---
 
-```text
-User → Library (slug) → Source (platform, url, extracted_text, ingest_status)
-                      → Chunk[] → Pinecone + FTS
-Question → hybrid retrieve → hydrate caption-only hits → LLM → cited answer
-         → PDF/Markdown only if artifact_type or export path is set
-```
-
-Ingest is **caption-first** by default: captions are triaged with heuristics, then the RAG answer model (e.g. Groq) in the gray zone. Rich captions skip download (`caption_indexed`). Thin captions still download and run Gemini multimodal extraction (`full_indexed`).
-
-Instagram `Post` rows remain for older ingestion paths. New work should use **Library / Source / Chunk**.
+## 1. System Architecture
 
 ```mermaid
 flowchart TD
-    subgraph Identity
-        U[User] -->|owns| L[Library]
+    subgraph ClientLayer ["Client Applications"]
+        Web[React Frontend / Content Browser]
+        CreatorHub[Creator Embed Portal]
     end
 
-    subgraph Ingest
-        IG[Instagram profile or URL] --> Scraper[Apify / yt-dlp]
-        TT[TikTok URL or profile] --> Conn[Connectors + Apify]
-        Scraper --> Media[Downloader]
-        Conn --> Media
-        Media --> Extract[Gemini multimodal or Whisper audio]
-        Extract --> SQL[(SQL sources + chunks)]
-        Extract --> Vec[Pinecone]
-        SQL --> FTS[SQLite FTS5 or Postgres FTS]
+    subgraph CloudLayer ["Query Serving Layer (FastAPI)"]
+        QueryAPI[Query API Instance]
     end
 
-    subgraph Query
-        Q[query / chat] --> Own[Ownership check]
-        Own --> Hybrid[RRF: dense + lexical]
-        Vec --> Hybrid
-        FTS --> Hybrid
-        Hybrid --> LLM[Gemini, Groq, or OpenAI]
-        LLM --> A[Cited answer]
-        LLM -.->|explicit flag only| Brief[PDF / Markdown brief]
+    subgraph ManagedData ["Managed Storage Layer"]
+        DB[(Relational DB\nSQLite / PostgreSQL)]
+        PC[(Pinecone\nVector Database)]
     end
 
-    L --> SQL
+    subgraph IngestLayer ["Private Ingestion Layer"]
+        Worker[Background Job Worker]
+        Scraper[Apify Connector / yt-dlp]
+        FFmpeg[FFmpeg Transcoder]
+    end
+
+    subgraph ExternalLLM ["External Model APIs"]
+        Gemini[Google Gemini API\nFlash Multimodal / Embeddings]
+        Groq[Groq API\nFast Inference Fallback]
+    end
+
+    %% Client query flow
+    Web & CreatorHub -->|Search / Query| QueryAPI
+    QueryAPI -->|Lexical Search| DB
+    QueryAPI -->|Vector Retrieval| PC
+    QueryAPI -->|Answer Synthesis| Gemini
+    QueryAPI -.->|Fallback| Groq
+
+    %% Ingestion flow
+    Worker -->|Scrape Profiles & URLs| Scraper
+    Scraper -->|Media Pre-processing| FFmpeg
+    FFmpeg -->|Multimodal Analysis| Gemini
+    Worker -->|Upsert Vectors| PC
+    Worker -->|Persist Records| DB
 ```
 
 ---
 
-## Design decisions
+## 2. Component Responsibilities
 
-### Libraries are the default scope
+### Ingestion Node (Worker)
+- Executes asynchronous background jobs dispatched via `POST /jobs/*` or `POST /libraries/{id}/sources`.
+- Interfaces with social media extractors (Apify social actors, `yt-dlp`).
+- Transcodes video files with FFmpeg, enforcing resolution caps (e.g., 720p maximum) to optimize API upload bandwidth.
+- Dispatches media files to the Gemini Files API for multimodal audio and visual analysis.
+- Generates text embeddings and upserts vectors directly into Pinecone.
+- Persists relational post, source, and chunk records into SQLite/PostgreSQL.
 
-A library has a human **slug** and an internal UUID. Queries pass `library`; the service resolves it and checks `owner_id`.
+### Query Serving Node (API)
+- Exposes stateless HTTP endpoints for clients.
+- Performs dual-branch hybrid retrieval:
+  - Vector similarity query via Pinecone with explicit `library_id` metadata filtering.
+  - Lexical full-text match via SQLite FTS5 (`chunks_fts`) scoped to the active library.
+- Formulates grounded prompts and streams or returns structured conversational responses.
+- Annotates responses with structured citation metadata (`[Source N]`).
 
-### Sources and chunks
-
-- **Source:** one URL with platform, author, caption, extracted text, `content_hash`, embedding provider/dimension, status (`pending` / `indexed` / `failed`).
-- **Chunk:** retrieval unit. Re-index replaces chunks, updates FTS, and deletes stale Pinecone IDs.
-- **Skip:** if the URL is already `indexed` in that library, download and Gemini are skipped.
-
-Instagram profile scrapes still write `Post` rows and may attach `library_id`.
-
-### Hybrid retrieval
-
-1. Embed the question with the **same** pinned provider as the index (`CRAG_PINECONE_INDEX`).
-2. Dense search in Pinecone, filtered by `library_id` or creator.
-3. Lexical search over chunks (SQLite FTS5 or PostgreSQL FTS).
-4. Reciprocal Rank Fusion. Lexical-only if Pinecone is missing.
-
-Context packing groups hits by URL. Invented `[Source N]` numbers are stripped.
-
-### Embeddings stay pinned
-
-`EMBED_PROVIDER` must match the index dimension for the life of that index.
-
-### Gemini quota
-
-Extraction, Gemini embeddings, and Gemini answers share one project quota. `GEMINI_MAX_CONCURRENT_REQUESTS` (default 1) serializes those calls. Default extraction model: `gemini-3.5-flash`.
-
-Groq is for **answers only** (`RAG_PROVIDER=groq`, default `openai/gpt-oss-120b`). It cannot analyze video.
-
-### Optional document export
-
-PDF/Markdown briefs are **not** inferred from chat text. Generate them only with CLI `--artifact` / `--export` or API `artifact_type`. Types: `workout_plan`, `recipe_book`, `grocery_list`. Rendering lives in `src/rag/artifacts.py`.
+### Storage and Hosting Strategy
+- **Media Hosting Elimination:** Raw MP4 video files are discarded immediately after analysis unless `keep_media=true` is explicitly requested. The frontend client renders native platform iframes (Instagram embed widgets, TikTok embeds) using canonical post URLs, eliminating cloud object storage costs for video assets.
+- **Data Boundary Isolation:** All relational queries and vector lookups require a `library_id` scope, guaranteeing multi-tenant isolation with zero cross-library contamination.
 
 ---
 
-## Layout
+## 3. Product Operating Modes
 
-| Path | Role |
-|---|---|
-| `storage/` | `User`, `Library`, `Source`, `Chunk`, plus legacy `Post`. |
-| `src/connectors/` | TikTok/URL metadata; Apify TikTok actor. YouTube rejected. |
-| `src/scraper/` | Instagram profile and post Apify actors. |
-| `src/downloader/` | HTTP + parallel carousel download. |
-| `src/analyzer/` | Gemini extraction; Whisper transcription. |
-| `src/indexer/` | Chunking, embeddings, Pinecone, SQL status. |
-| `src/rag/` | Lexical retriever, hybrid RRF, query engine, briefs. |
-| `src/llm/` | Gemini (throttled), Groq/OpenAI factory. |
-| `src/pipeline/` | Library ingest, Instagram scrape, query. |
-| `src/api/` | FastAPI + background jobs. |
-| `main.py` | Typer CLI. |
+### Personal Knowledge Base
+Users create custom libraries (e.g., "Strength Training", "Gourmet Cooking"), ingest favorite reels or channels, and query the consolidated knowledge base via conversational chat.
+
+### Creator Hub
+A dedicated read-only portal for content creators:
+- Restricted to a single, verified creator library.
+- Offers semantic feed search: queries return ranked vertical video cards driven by semantic vector similarity rather than text synthesis alone.
+
+---
+
+## 4. Reliability and Resilience
+
+- **Model Fallback Routing:** If a primary Gemini model encounters rate limits (HTTP 429) or temporary outages, the client automatically rotates across configured API keys and falls back through compatible model variants (`gemini-3.5-flash`, `gemini-3.5-flash-lite`, `gemini-3.8-flash`, etc.).
+- **Graceful Degradation:** If Pinecone connectivity is interrupted, the engine falls back to local SQLite FTS5 lexical matching, ensuring continued query availability.
+- **Idempotent Ingestion:** Re-running ingest on previously processed URLs utilizes content hashing (`content_hash`) and platform shortcodes to update existing records rather than producing duplicates.

@@ -9,9 +9,7 @@ description = "CreatorRAG (crag): turn selected Instagram and TikTok creator con
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "apify-client>=3.1.3",
     "fastembed>=0.8.0",
-    "faster-whisper>=1.2.1",
     "google-genai>=2.19.0",
     "openai>=3.3.1",
     "pinecone>=9.1.0",
@@ -22,12 +20,12 @@ dependencies = [
     "rich>=14.0.0",
     "sqlalchemy>=2.0",
     "typer>=0.27.1",
-    "yt-dlp>=2026.8.19",
 ]
 
 [project.scripts]
-crag = "main:main"
+crag = "src.cli:main"
 crag-api = "src.api.main:main"
+crag-query-api = "src.api.query_main:main"
 
 [dependency-groups]
 dev = [
@@ -36,6 +34,11 @@ dev = [
 ]
 
 [project.optional-dependencies]
+ingest = [
+    "apify-client>=3.1.3",
+    "faster-whisper>=1.2.1",
+    "yt-dlp>=2026.8.19",
+]
 api = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
@@ -43,8 +46,20 @@ api = [
     "httpx>=0.27",
 ]
 
-[tool.setuptools]
-py-modules = ["main", "api"]
-
 [tool.setuptools.packages.find]
 include = ["src*", "config*", "storage*"]
+
+[tool.pytest.ini_options]
+# Keep ad-hoc scripts under scratch/ out of test discovery: several of them run
+# code at import time and would abort the whole session.
+testpaths = ["tests"]
+norecursedirs = [
+    "scratch",
+    ".venv",
+    ".git",
+    "build",
+    "dist",
+    "data",
+    "storage",
+    "__pycache__",
+]

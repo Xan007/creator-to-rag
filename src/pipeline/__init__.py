@@ -1,10 +1,20 @@
-from src.pipeline._common import Progress, echo
-from src.pipeline.query import query_knowledge
-from src.pipeline.hydrate import hydrate_sources
-from src.pipeline.reel import add_reel
-from src.pipeline.run import run_profile, scrape_profile
-from src.pipeline.saved import import_user_saved_posts, process_saved
-from src.pipeline.library import create_library, ingest_urls, list_libraries, resolve_library
+from importlib import import_module
+
+_MODULES = {
+    "Progress": "_common", "echo": "_common", "query_knowledge": "query",
+    "hydrate_sources": "hydrate", "add_reel": "reel", "run_profile": "run",
+    "scrape_profile": "run", "import_user_saved_posts": "saved", "process_saved": "saved",
+    "create_library": "library", "ingest_urls": "library", "link_posts_to_library": "library",
+    "list_libraries": "library", "resolve_library": "library",
+}
+
+
+def __getattr__(name):
+    if name not in _MODULES:
+        raise AttributeError(name)
+    value = getattr(import_module(f"src.pipeline.{_MODULES[name]}"), name)
+    globals()[name] = value
+    return value
 
 __all__ = [
     "Progress",
@@ -19,5 +29,6 @@ __all__ = [
     "create_library",
     "list_libraries",
     "ingest_urls",
+    "link_posts_to_library",
     "resolve_library",
 ]

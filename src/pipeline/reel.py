@@ -67,103 +67,99 @@ def add_reel(
     indexer = None
     downloader = MediaDownloader()
 
-    db = get_session()
+    total_urls = len(urls)
+    for position, url in enumerate(urls, 1):
+        reel_id = None
+        downloaded_files: List[Dict[str, str]] = []
+        try:
+            shortcode = shortcode_from_url(url)
+            meta = apify_meta.get(shortcode)
 
-    try:
-        total_urls = len(urls)
-        for position, url in enumerate(urls, 1):
-            reel_id = None
-            downloaded_files: List[Dict[str, str]] = []
+            if meta is None:
+                meta = _reel_meta_via_ytdlp(url)
+            else:
+                meta = dict(meta)
+                meta.setdefault("url", url)
+
+            reel_id = meta["id"]
+            description = meta.get("description", "")
+            creator_username = creator or meta.get("creator_username", "") or ""
+
+            check_db = get_session()
             try:
-                shortcode = shortcode_from_url(url)
-                meta = apify_meta.get(shortcode)
-
-                if meta is None:
-                    meta = _reel_meta_via_ytdlp(url)
-                else:
-                    meta = dict(meta)
-                    meta.setdefault("url", url)
-
-                reel_id = meta["id"]
-                description = meta.get("description", "")
-                creator_username = creator or meta.get("creator_username", "") or ""
-
-                existing_post = repo.get_post(db, reel_id)
+                existing_post = repo.get_post(check_db, reel_id)
                 if existing_post and existing_post.extracted_knowledge and existing_post.indexed_at:
                     source = None
                     if library_id:
-                        source = repo.get_source(db, f"{library_id}:{reel_id}")
+                        source = repo.get_source(check_db, f"{library_id}:{reel_id}")
                     already_full = not source or source.ingest_status != "caption_indexed"
                     if already_full or not full_media:
                         progress(f"Reel {reel_id} is already indexed in knowledge base.")
                         added.append({"id": reel_id, "url": url, "already_indexed": True})
                         continue
+            finally:
+                check_db.close()
 
-                mode = settings.engine
-                is_whisper = mode in ("local_whisper", "openai_whisper")
-                if analyzer is None:
-                    analyzer = WhisperAnalyzer(mode=mode) if is_whisper else GeminiAnalyzer()
-                    indexer = PineconeIndexer()
+            mode = settings.engine
+            is_whisper = mode in ("local_whisper", "openai_whisper")
+            if analyzer is None:
+                analyzer = WhisperAnalyzer(mode=mode) if is_whisper else GeminiAnalyzer()
+                indexer = PineconeIndexer()
 
-                ingest_status = "full_indexed"
-                try:
-                    from src.analyzer.caption_triage import resolve_ingest_plan
+            ingest_status = "full_indexed"
+            try:
+                from src.analyzer.caption_triage import resolve_ingest_plan
 
-                    should_download, ingest_status = resolve_ingest_plan(
-                        description=description,
-                        caption_only=caption_only,
-                        full_media=full_media,
-                        platform="instagram",
-                    )
-                    if should_download:
-                        progress(post_step(position, total_urls, reel_id, "downloading media..."))
-                        downloaded_files = downloader.download_media_items(
-                            meta.get("media_items") or [],
-                            reel_id,
-                            permalink=url,
-                            progress=lambda message: progress(post_step(position, total_urls, reel_id, message)),
-                        ) or []
-                        if not downloaded_files:
-                            downloaded_files = download_with_ytdlp(url, reel_id, prefix="reel") or []
-                except Exception as e:
-                    progress(post_step(position, total_urls, reel_id, f"download failed, using caption: {e}"))
-                    ingest_status = "caption_indexed"
-
-                step = lambda message: progress(post_step(position, total_urls, reel_id, message))
-                extract_kwargs = {} if is_whisper else {"progress": step}
-                if downloaded_files:
-                    extracted_text = analyzer.extract_knowledge(
-                        downloaded_files, description, **extract_kwargs
-                    )
-                elif ingest_status == "caption_indexed":
-                    step("caption-only — skipping download")
-                    extracted_text = description
-                else:
-                    extracted_text = (
-                        analyzer.extract_knowledge([], description, **extract_kwargs)
-                        if description
-                        else ""
-                    )
-
-                indexer.index_post(
-                    post_id=reel_id,
-                    url=url,
-                    creator_username=creator_username,
-                    post_type=meta.get("type", "Reel"),
+                should_download, ingest_status = resolve_ingest_plan(
                     description=description,
-                    extracted_text=extracted_text,
-                    library_id=library_id,
-                    ingest_status=ingest_status,
+                    caption_only=caption_only,
+                    full_media=full_media,
+                    platform="instagram",
+                )
+                if should_download:
+                    progress(post_step(position, total_urls, reel_id, "downloading media..."))
+                    downloaded_files = downloader.download_media_items(
+                        meta.get("media_items") or [],
+                        reel_id,
+                        permalink=url,
+                        progress=lambda message: progress(post_step(position, total_urls, reel_id, message)),
+                    ) or []
+                    if not downloaded_files:
+                        downloaded_files = download_with_ytdlp(url, reel_id, prefix="reel") or []
+            except Exception as e:
+                progress(post_step(position, total_urls, reel_id, f"download failed, using caption: {e}"))
+                ingest_status = "caption_indexed"
+
+            step = lambda message: progress(post_step(position, total_urls, reel_id, message))
+            extract_kwargs = {} if is_whisper else {"progress": step}
+            if downloaded_files:
+                extracted_text = analyzer.extract_knowledge(
+                    downloaded_files, description, **extract_kwargs
+                )
+            else:
+                step("caption-only — extracting knowledge with AI")
+                extracted_text = (
+                    analyzer.extract_knowledge([], description, **extract_kwargs)
+                    if description
+                    else ""
                 )
 
-                added.append({"id": reel_id, "url": url, "already_indexed": False})
-            except Exception as e:
-                failed.append({"url": url, "error": str(e)})
-                progress(f"Failed {url}: {e}")
-            finally:
-                if downloaded_files and not keep_media:
-                    downloader.cleanup_items(downloaded_files)
-    finally:
-        db.close()
+            indexer.index_post(
+                post_id=reel_id,
+                url=url,
+                creator_username=creator_username,
+                post_type=meta.get("type", "Reel"),
+                description=description,
+                extracted_text=extracted_text,
+                library_id=library_id,
+                ingest_status=ingest_status,
+            )
+            added.append({"id": reel_id, "url": url, "already_indexed": False})
+        except Exception as e:
+            failed.append({"url": url, "error": str(e)})
+            progress(f"Failed {url}: {e}")
+        finally:
+            if downloaded_files and not keep_media:
+                downloader.cleanup_items(downloaded_files)
 
     return {"added": added, "failed": failed}

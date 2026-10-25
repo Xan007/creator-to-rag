@@ -13,6 +13,8 @@ class OpenAICompatibleLLMClient:
         self.client = OpenAI(
             api_key=api_key or os.getenv("OPENAI_API_KEY") or os.getenv("GROQ_API_KEY"),
             base_url=base_url,
+            timeout=45.0,
+            max_retries=1,
         )
         self.default_model = default_model
 
@@ -34,4 +36,6 @@ class OpenAICompatibleLLMClient:
             kwargs["response_format"] = {"type": "json_object"}
 
         response = self.client.chat.completions.create(**kwargs)
+        if not response.choices or not response.choices[0].message.content:
+            raise RuntimeError("The language model returned an empty answer.")
         return response.choices[0].message.content.strip()

@@ -5,12 +5,12 @@ from src.connectors.models import NormalizedSource
 
 
 def detect_platform(url: str) -> str:
-    host = urlparse(url).netloc.lower().removeprefix("www.")
-    if "instagram.com" in host:
+    host = (urlparse(url).hostname or "").lower()
+    if host == "instagram.com" or host.endswith(".instagram.com"):
         return "instagram"
-    if "youtube.com" in host or host == "youtu.be":
+    if host == "youtube.com" or host.endswith(".youtube.com") or host == "youtu.be":
         return "youtube"
-    if "tiktok.com" in host:
+    if host == "tiktok.com" or host.endswith(".tiktok.com"):
         return "tiktok"
     return "url"
 
@@ -21,14 +21,14 @@ def extract_url_source(url: str) -> NormalizedSource:
 
     if not url or not url.startswith(("http://", "https://")):
         raise ValueError("A public http(s) URL is required.")
+    platform = detect_platform(url)
+    if platform == "youtube":
+        raise ValueError("YouTube is not supported. Use Instagram or TikTok sources.")
     try:
         with YoutubeDL({"quiet": True, "no_warnings": True, "noplaylist": True}) as ydl:
             info: Dict[str, Any] = ydl.extract_info(url, download=False)
     except Exception as exc:
         raise ValueError(f"Could not read URL metadata: {exc}") from exc
-    platform = detect_platform(url)
-    if platform == "youtube":
-        raise ValueError("YouTube is not supported. Use Instagram or TikTok sources.")
     return NormalizedSource(
         url=url,
         platform=platform,

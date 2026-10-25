@@ -3,7 +3,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from config.ig_profiles import IGProfileInfo, load_ig_profile, save_ig_profile
+from config.profiles import ProfileConfig, load_profile, save_profile
 from src.pipeline._common import Progress, echo, locked_progress, post_step
 
 
@@ -35,9 +35,9 @@ def scrape_profile(
     run_start = time.time()
     run_iso = _now_iso()
 
-    profile = load_ig_profile(username)
+    profile = load_profile(username)
     if not profile:
-        profile = IGProfileInfo(username=username)
+        profile = ProfileConfig(username=username)
 
     progress(f"Scraping @{username} — {run_iso[:19]}Z")
     progress(
@@ -60,7 +60,7 @@ def scrape_profile(
     progress(f"  Already indexed: {len(known_ids)} post(s) — will skip these.")
 
     profile.last_run_at = run_iso
-    save_ig_profile(profile)
+    save_profile(profile)
 
     try:
         scraper = ApifyScraper(only_posts_newer_than=newer_than)
@@ -85,16 +85,24 @@ def scrape_profile(
         )
         progress(f"  Retrieved {len(all_posts)} new candidate(s).")
 
+        if all_posts and interests:
+            from src.filter.interest_filter import InterestFilter
+            progress("Pre-filtering posts based on interests...")
+            interest_filter = InterestFilter()
+            kept_ids = interest_filter.filter_batch(all_posts, interests)
+            all_posts = [p for p in all_posts if str(p["id"]) in kept_ids]
+            progress(f"  Kept {len(all_posts)} post(s) after interest filtering.")
+
         if not all_posts:
             profile.last_scraped_at = run_start
-            save_ig_profile(profile)
+            save_profile(profile)
             return {
                 "processed": 0,
                 "skipped_known": len(known_ids),
                 "failed": 0,
                 "total_indexed": len(known_ids),
                 "last_scraped_at": run_start,
-                "message": "No new posts found — profile is up to date.",
+                "message": "No new posts found (or all were filtered out).",
             }
 
         def process_post_task(post_number: int, post: Dict[str, Any]):
@@ -146,10 +154,15 @@ def scrape_profile(
                             downloaded, description, progress=step
                         )
                 else:
-                    step("caption-only — skipping download")
-                    extracted = description
+                    step("caption-only — skipping download, extracting from caption")
+                    if is_whisper:
+                        extracted = description  # Whisper can't extract from text only, just copy
+                    else:
+                        extracted = analyzer.extract_knowledge(
+                            [], description, progress=step
+                        )
 
-                indexer.index_post(
+                vector = indexer.prepare_post_index(
                     post_id=post_id,
                     url=post_url,
                     creator_username=username,
@@ -158,10 +171,11 @@ def scrape_profile(
                     extracted_text=extracted,
                     library_id=library_id,
                     ingest_status=ingest_status,
+                    published_at=post.get("taken_at"),
                 )
                 elapsed = time.time() - started
-                step(f"indexed in {elapsed:.0f}s")
-                return "ok", post_id, None
+                step(f"prepared in {elapsed:.0f}s")
+                return "ok", post_id, vector
             except Exception as err:
                 step(f"error: {err}")
                 return "error", post_id, err
@@ -169,21 +183,34 @@ def scrape_profile(
                 if downloaded and not keep_media:
                     downloader.cleanup_items(downloaded)
 
+        from src.llm.gemini_limits import _max_concurrent_requests
+        max_workers = max(3, _max_concurrent_requests())
         progress(
-            f"Processing {len(all_posts)} post(s) with 3 workers "
-            "(downloads in parallel, Gemini extract 1 at a time)..."
+            f"Processing {len(all_posts)} post(s) with {max_workers} workers "
+            "(downloads in parallel, Gemini extract based on pool size)..."
         )
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            futures = {
-                executor.submit(process_post_task, post_number, post): post
-                for post_number, post in enumerate(all_posts, 1)
-            }
-            for future in as_completed(futures):
-                status, pid, err = future.result()
-                if status == "ok":
-                    new_post_ids.append(pid)
-                else:
-                    failed_ids.append(pid)
+        all_vectors = []
+        try:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {
+                    executor.submit(process_post_task, post_number, post): post
+                    for post_number, post in enumerate(all_posts, 1)
+                }
+                for future in as_completed(futures):
+                    status, pid, vector_or_err = future.result()
+                    if status == "ok":
+                        new_post_ids.append(pid)
+                        if vector_or_err:
+                            all_vectors.append(vector_or_err)
+                    else:
+                        failed_ids.append(pid)
+        finally:
+            if all_vectors:
+                progress(f"Batch upserting {len(all_vectors)} vectors to Pinecone before exiting...")
+                try:
+                    indexer.batch_upsert(all_vectors)
+                except Exception as e:
+                    progress(f"Failed to upsert vectors during cleanup: {e}")
 
     except Exception as e:
         progress(f"Pipeline error: {e}")
@@ -203,7 +230,7 @@ def scrape_profile(
         profile.total_posts_scraped = repo.count_posts(db, creator_username=username)
     finally:
         db.close()
-    save_ig_profile(profile)
+    save_profile(profile)
 
     progress(f"Done in {elapsed:.1f}s — indexed {len(new_post_ids)}, failed {len(failed_ids)}.")
 

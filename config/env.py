@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 
 
 def getenv(name: str, default: Optional[str] = None) -> Optional[str]:
-    """Read CRAG_<name>, falling back to legacy INSTARAG_<name>."""
+    """Read CRAG_<name>, falling back to legacy INSTARAG_<name>, and then standard <name>."""
     load_runtime_env()
     key = f"CRAG_{name}"
     if key in os.environ:
@@ -15,6 +15,8 @@ def getenv(name: str, default: Optional[str] = None) -> Optional[str]:
     legacy = f"INSTARAG_{name}"
     if legacy in os.environ:
         return _strip_env_quotes(os.environ[legacy])
+    if name in os.environ:
+        return _strip_env_quotes(os.environ[name])
     return default
 
 

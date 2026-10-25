@@ -345,9 +345,7 @@ name = "creatorrag"
 version = "0.3.0"
 source = { editable = "." }
 dependencies = [
-    { name = "apify-client" },
     { name = "fastembed" },
-    { name = "faster-whisper" },
     { name = "google-genai" },
     { name = "openai" },
     { name = "pinecone" },
@@ -358,7 +356,6 @@ dependencies = [
     { name = "rich" },
     { name = "sqlalchemy" },
     { name = "typer" },
-    { name = "yt-dlp" },
 ]
 
 [package.optional-dependencies]
@@ -369,6 +366,12 @@ api = [
     { name = "uvicorn", extra = ["standard"] },
 ]
 
+ingest = [
+    { name = "apify-client" },
+    { name = "faster-whisper" },
+    { name = "yt-dlp" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "alembic" },
@@ -377,10 +380,10 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "apify-client", specifier = ">=3.1.3" },
+    { name = "apify-client", marker = "extra == 'ingest'", specifier = ">=3.1.3" },
     { name = "fastapi", marker = "extra == 'api'", specifier = ">=0.115" },
     { name = "fastembed", specifier = ">=0.8.0" },
-    { name = "faster-whisper", specifier = ">=1.2.1" },
+    { name = "faster-whisper", marker = "extra == 'ingest'", specifier = ">=1.2.1" },
     { name = "google-genai", specifier = ">=2.19.0" },
     { name = "httpx", marker = "extra == 'api'", specifier = ">=0.27" },
     { name = "openai", specifier = ">=3.3.1" },
@@ -394,9 +397,9 @@ requires-dist = [
     { name = "sqlalchemy", specifier = ">=2.0" },
     { name = "typer", specifier = ">=0.27.1" },
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'api'", specifier = ">=0.30" },
-    { name = "yt-dlp", specifier = ">=2026.8.19" },
+    { name = "yt-dlp", marker = "extra == 'ingest'", specifier = ">=2026.8.19" },
 ]
-provides-extras = ["api"]
+provides-extras = ["api", "ingest"]
 
 [package.metadata.requires-dev]
 dev = [

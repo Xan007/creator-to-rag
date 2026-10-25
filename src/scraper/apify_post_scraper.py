@@ -30,6 +30,14 @@ def _normalize_post(item: Dict[str, Any]) -> Dict[str, Any]:
             media_items = [{"type": "image", "url": item["displayUrl"]}]
 
     description = "\n".join(filter(None, [item.get("caption"), item.get("alt")]))
+    taken_at = item.get("taken_at")
+    if not taken_at and item.get("timestamp"):
+        try:
+            from datetime import datetime
+            taken_at = datetime.fromisoformat(item["timestamp"].replace("Z", "+00:00")).timestamp()
+        except Exception:
+            pass
+
     return {
         "id": shortcode,
         "url": item.get("url") or f"https://www.instagram.com/p/{shortcode}/",
@@ -38,6 +46,7 @@ def _normalize_post(item: Dict[str, Any]) -> Dict[str, Any]:
         "hashtags": _extract_hashtags(description or ""),
         "media_items": media_items,
         "owner_username": item.get("ownerUsername"),
+        "taken_at": taken_at,
     }
 
 

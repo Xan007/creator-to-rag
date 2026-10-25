@@ -1,24 +1,42 @@
-version: '3.8'
-
 services:
-  crag-api:
+  backend:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: crag-api
+      target: ingest
     ports:
-      - "${CRAG_PORT:-8000}:8000"
-    environment:
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - PINECONE_API_KEY=${PINECONE_API_KEY}
-      - APIFY_API_KEY=${APIFY_API_KEY}
-      - CRAG_DATABASE_URL=${CRAG_DATABASE_URL:-sqlite:////data/config/crag.db}
-      - CRAG_API_KEY=${CRAG_API_KEY:-}
-      - CRAG_CORS_ORIGINS=${CRAG_CORS_ORIGINS:-*}
+      - "127.0.0.1:8000:8000"
     volumes:
-      - crag_data:/data
+      - ./.env:/app/.env
+      - ./data:/app/data
+      - crag-state:/app/state
+      - ./src:/app/src
+      - ./storage:/app/storage
+      - ./config:/app/config
+    environment:
+      - CRAG_HOST=0.0.0.0
+      - CRAG_PORT=8000
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "127.0.0.1:5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      # Browser stays same-origin: Vite inside the container proxies /api to the
+      # backend service. Override VITE_API_URL only if you want direct calls.
+      - VITE_API_URL=/api
+      - VITE_API_PROXY_TARGET=http://backend:8000
+      # Bind mounts on Windows/macOS need polling for reliable HMR.
+      - CHOKIDAR_USEPOLLING=true
+    depends_on:
+      - backend
     restart: unless-stopped
 
 volumes:
-  crag_data:
-    driver: local
+  crag-state:

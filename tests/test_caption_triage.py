@@ -69,7 +69,8 @@ def test_llm_failure_defaults_to_thin(monkeypatch):
     assert triage_caption("algo intermedio sobre el video") == "thin"
 
 
-def test_resolve_ingest_plan_flags():
+def test_resolve_ingest_plan_flags(monkeypatch):
+    monkeypatch.setattr("src.analyzer.caption_triage._llm_caption_verdict", lambda description: "rich")
     rich = "Press militar 4x8 con mancuernas, rest 2 min, espalda neutra y core apretado todo el set."
     should_download, status = resolve_ingest_plan(description=rich)
     assert should_download is False

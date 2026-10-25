@@ -97,7 +97,8 @@ class WhisperAnalyzer:
 
         if transcriptions:
             combined = "\n".join(transcriptions)
-            return f"**Transcribed Audio**\n\n{combined}\n"
+            desc_part = f"\n\n**Post Description**\n{post_description}" if post_description else ""
+            return f"**Transcribed Audio**\n\n{combined}{desc_part}\n"
         if last_error is not None:
             raise last_error
         return post_description

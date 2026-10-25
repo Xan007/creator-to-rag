@@ -48,10 +48,14 @@ def download_with_ytdlp(url: str, pid: str, prefix: str = "saved") -> Optional[L
         "retries": 3,
         "concurrent_fragment_downloads": 4,
     }
+
+    cookies_path = os.getenv("IG_COOKIES_FILE", "cookies.txt")
+    if os.path.exists(cookies_path):
+        ydl_opts["cookiefile"] = cookies_path
     with YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
         filename = ydl.prepare_filename(info)
     if os.path.exists(filename):
         return [{"type": "video", "path": filename}]
-    candidates = glob.glob(outtmpl.replace("%(ext)s", ".*"))
+    candidates = glob.glob(outtmpl.replace("%(ext)s", "*"))
     return [{"type": "video", "path": candidates[0]}] if candidates else None

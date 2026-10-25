@@ -4,17 +4,67 @@ __pycache__/
 build/
 dist/
 wheels/
+*.egg-info/
 *.egg-info
+.eggs/
+
+# Python tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+.coverage
+coverage.xml
+htmlcov/
 
 # Virtual environments
-.venv
+.venv/
+venv/
 
-# Data and environments
+# Environment / secrets
 .env
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+cookies.txt
+
+# Node / frontend
+node_modules/
+frontend/dist/
+.vite/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Local data, databases and generated media
 data/raw/
 data/processed/
 data/saved/
+*.db
+*.sqlite
+*.sqlite3
+storage/media/
+storage/exports/
 
-# Editor
+# AI tools, design artifacts and throwaway scripts
+.agents/
+.impeccable/
+scratch/
+
+# Private product planning (kept locally, never published)
+PRODUCT.md
+docs/pricing-and-costs.md
+docs/market-validation.md
+docs/product-vision.md
+
+# Editor / OS
 .vscode/
-
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+deployment/.env.query

@@ -3,9 +3,9 @@ import os
 import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
-from google import genai
 from pinecone import Pinecone
 from config.env import getenv, load_runtime_env
+from src.embeddings.factory import EmbeddingFactory
 from src.llm.factory import LLMClientFactory
 from src.rag.artifacts import get_artifact_system_prompt
 from src.rag.conversation import (
@@ -20,7 +20,6 @@ load_runtime_env()
 logger = logging.getLogger(__name__)
 
 INDEX_NAME = getenv("PINECONE_INDEX", "creatorrag")
-EMBEDDING_MODEL = "gemini-embedding-001"
 
 _CITATION_RE = re.compile(r"Source\s*(\d+)", re.IGNORECASE)
 
@@ -58,7 +57,7 @@ Your knowledge comes from the Instagram posts and reels provided in the context.
 Conversation Guidelines:
 1. Answer accurately, clearly, and concisely in the same language as the user's question.
 2. Avoid robotic phrasing: do not say "Based on the provided documents" or "In the context given".
-3. When you use a specific exercise, sets/reps, ingredient, or step from the context, cite it with [Source N] on that item (use the number from the context header). Mentioning @creator is optional; [Source N] is required so the app can link the original post. Do not invent source numbers or skip citations on those items.
+3. When you use facts, recipes, or exercises from the context, cite the source using [Source N] naturally at the end of the sentence, step, or recipe item. Do NOT cite after every single ingredient or word (e.g. write "Mezcla avena, proteína y claras en una sartén [Source 2]", NOT "avena [Source 2], proteína [Source 2], claras [Source 2]"). Never repeat the same [Source N] multiple times in the same sentence. Mentioning @creator is optional; [Source N] is required so the app can link the original post.
 4. NEVER invent, paste, or repeat URLs or posts that are not in the context.
 5. Balanced proactivity: If the user asks a purely factual question, answer directly and concisely. If they ask for advice, planning, or routines, naturally offer 1 or 2 helpful follow-up suggestions or next steps without being pushy."""
 
@@ -80,7 +79,27 @@ followed by 1-3 plain sentences of widely accepted knowledge on the topic.
 - If your grounded answer already fully covers the question, omit the extra block entirely."""
 
 
-from src.embeddings.factory import EmbeddingFactory
+_GENERIC_CTA_RE = re.compile(r"^(si quieres|escríbeme|whatsapp|comenta la palabra|link en mi perfil)", re.IGNORECASE)
+
+def _extract_title(extracted: str, fallback: str) -> str:
+    fallback_clean = (fallback or "").strip()
+    if fallback_clean and not _GENERIC_CTA_RE.search(fallback_clean):
+        return fallback_clean[:200]
+
+    if extracted:
+        for line in extracted.splitlines():
+            line_str = line.strip(" #*")
+            if re.match(r"^topic\s*:", line_str, re.IGNORECASE):
+                topic_val = re.sub(r"^topic\s*:\s*", "", line_str, flags=re.IGNORECASE).strip()
+                if topic_val and not _GENERIC_CTA_RE.search(topic_val):
+                    return topic_val[:200]
+        for line in extracted.splitlines():
+            clean = line.strip(" #*")
+            if clean and clean.lower() not in ["topic", "summary", "knowledge", "title"]:
+                if not _GENERIC_CTA_RE.search(clean):
+                    return clean[:200]
+
+    return fallback_clean or "Post de creador"
 
 def _extract_brief_summary(knowledge: str, caption: str) -> str:
     text = (knowledge or "").strip() or (caption or "").strip()
@@ -100,16 +119,25 @@ def _extract_brief_summary(knowledge: str, caption: str) -> str:
 
 
 class QueryEngine:
-    def __init__(self):
+    def __init__(
+        self,
+        embed_provider: Any = None,
+        llm: Any = None,
+        hybrid_retriever: Any = None,
+        lexical_retriever: Any = None,
+        pinecone_index: Any = None,
+        allow_hydration: bool = True,
+    ):
+        self.allow_hydration = allow_hydration
         pinecone_key = os.getenv("PINECONE_API_KEY")
         self.pc = Pinecone(api_key=pinecone_key) if pinecone_key else None
-        self.index = self.pc.Index(INDEX_NAME) if self.pc else None
+        self.index = pinecone_index if pinecone_index is not None else (self.pc.Index(INDEX_NAME) if self.pc else None)
 
-        self.embed_provider = EmbeddingFactory.get_provider()
-        self.llm = LLMClientFactory.get_client(stage="rag")
+        self.embed_provider = embed_provider or EmbeddingFactory.get_provider()
+        self.llm = llm or LLMClientFactory.get_client(stage="rag")
         self.rag_model = os.getenv("RAG_MODEL")
-        self.hybrid_retriever = HybridRetriever()
-        self.lexical_retriever = LexicalRetriever()
+        self.hybrid_retriever = hybrid_retriever or HybridRetriever()
+        self.lexical_retriever = lexical_retriever or LexicalRetriever()
 
     def _get_embedding(self, text: str) -> Optional[List[float]]:
         try:
@@ -137,7 +165,8 @@ class QueryEngine:
             source_matches = source_matches[:2]
             meta = source_matches[0].get("metadata", {})
             post_creator = meta.get("creator_username") or meta.get("author", "Unknown")
-            source_title = meta.get("title", "")
+            extracted = source_matches[0].get("metadata", {}).get("extracted_knowledge", "")
+            source_title = _extract_title(extracted, meta.get("title", ""))
             knowledge = "\n\n".join(
                 m.get("metadata", {}).get("extracted_knowledge", "")
                 for m in source_matches
@@ -163,6 +192,8 @@ class QueryEngine:
                 "source_id": meta.get("source_id") or meta.get("post_id"),
                 "score": score,
                 "summary": summary,
+                "knowledge": knowledge[:3000] if knowledge else "",
+                "caption": caption[:MAX_CAPTION_CHARS] if caption else "",
             })
 
         full_context = "\n---\n".join(context_parts)
@@ -198,21 +229,29 @@ User Question:
     @staticmethod
     def annotate_citations(answer: str, sources: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         cited = set(_CITATION_RE.findall(answer or ""))
-        flagged = [{**src, "cited": str(i) in cited} for i, src in enumerate(sources, start=1)]
+        flagged = [{**src, "source_index": i, "cited": str(i) in cited} for i, src in enumerate(sources, start=1)]
         # Groq/other answer models often name @creator and skip [Source N].
         # Still list the retrieved posts so the user can open the original URL.
         if sources and not cited and _answer_used_context(answer):
-            return [{**src, "cited": True} for src in flagged]
+            return [{**src, "source_index": i, "cited": True} for i, src in enumerate(flagged, start=1)]
         return flagged
 
     @staticmethod
     def sanitize_citations(answer: str, source_count: int) -> str:
-        """Remove references to source numbers that were not supplied."""
+        """Remove invalid citations, deduplicate redundant citations, and fix punctuation."""
+        if not answer:
+            return ""
+
         def replace(match: re.Match) -> str:
             number = int(match.group(1))
             return match.group(0) if 1 <= number <= source_count else ""
 
-        return re.sub(r"\[Source\s*(\d+)\]", replace, answer or "", flags=re.IGNORECASE)
+        cleaned = re.sub(r"\[\s*Source\s*(\d+)\s*\]", replace, answer, flags=re.IGNORECASE)
+        # Deduplicate immediate duplicates like [Source 2] [Source 2] -> [Source 2]
+        cleaned = re.sub(r"(\[Source\s*\d+\])(?:\s*,?\s*\1)+", r"\1", cleaned, flags=re.IGNORECASE)
+        # Fix trailing space before punctuation: "[Source 2] ," -> "[Source 2],"
+        cleaned = re.sub(r"(\[Source\s*\d+\])\s+([,\.;])", r"\1\2", cleaned)
+        return cleaned
 
     def _condense_question(self, question: str, pairs: List[Tuple[str, str]]) -> str:
         if not pairs:
@@ -259,18 +298,42 @@ Standalone Question:"""
         search_query = self._condense_question(question, pairs)
 
         filter_dict: Optional[Dict[str, Any]] = None
+        conditions = []
         if library_id:
-            filter_dict = {"library_id": {"$eq": library_id}}
-        elif post_ids is not None:
+            lib_ids = [library_id]
+            try:
+                from storage.db import get_session
+                from sqlalchemy import text
+                db = get_session()
+                row = db.execute(
+                    text("SELECT id, slug FROM libraries WHERE id = :lid OR slug = :lid"),
+                    {"lid": library_id}
+                ).fetchone()
+                if row:
+                    lib_ids = list({str(row[0]), str(row[1])})
+                db.close()
+            except Exception:
+                pass
+
+            if len(lib_ids) == 1:
+                conditions.append({"library_id": {"$eq": lib_ids[0]}})
+            else:
+                conditions.append({"library_id": {"$in": lib_ids}})
+        if post_ids is not None:
             if not post_ids:
                 return {
                     "answer": "Este grupo todavía no tiene posts indexados.",
                     "sources": [],
                     "mode": mode,
                 }
-            filter_dict = {"post_id": {"$in": post_ids}}
-        elif creator:
-            filter_dict = {"creator_username": {"$eq": creator}}
+            conditions.append({"post_id": {"$in": post_ids}})
+        if creator:
+            conditions.append({"creator_username": {"$eq": creator}})
+
+        if len(conditions) == 1:
+            filter_dict = conditions[0]
+        elif len(conditions) > 1:
+            filter_dict = {"$and": conditions}
 
         started = time.perf_counter()
         query_vector = self._get_embedding(search_query)
@@ -325,7 +388,7 @@ Standalone Question:"""
 
         hydrated_ids: List[str] = []
         hydrate_on_query = os.getenv("HYDRATE_ON_QUERY", "true").lower() in ("true", "1", "yes")
-        if hydrate_on_query:
+        if self.allow_hydration and hydrate_on_query:
             from src.pipeline.hydrate import (
                 caption_indexed_ids_from_matches,
                 hydrate_sources,

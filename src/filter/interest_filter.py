@@ -20,27 +20,31 @@ class InterestFilter:
             return {p["id"] for p in posts}
 
         matching_ids: Set[str] = set()
+        chunks = [posts[i:i + chunk_size] for i in range(0, len(posts), chunk_size)]
 
-        for i in range(0, len(posts), chunk_size):
-            chunk = posts[i:i + chunk_size]
+        def process_chunk(chunk):
             items_for_prompt = [
                 {
                     "id": p["id"],
-                    "caption": p.get("description", "")[:300],
+                    "caption": (p.get("description") or p.get("caption") or "")[:300],
                     "hashtags": p.get("hashtags", [])[:5],
                 }
                 for p in chunk
             ]
 
-            prompt = f"""You are a batch content classifier for an Instagram knowledge base.
+            prompt = f"""You are a batch content triage AI for an Instagram knowledge base.
 The user is ONLY interested in posts related to: "{interests}".
 
-Review the following list of posts:
+Review the following list of posts (by caption and hashtags):
 {json.dumps(items_for_prompt, ensure_ascii=False)}
 
 Task:
-Determine which post IDs match the user's interests or could contain relevant knowledge.
-Respond with ONLY a valid JSON array of matching IDs, like:
+Determine which post IDs should be KEPT for deep video analysis.
+CRITICAL RULE: If a caption is ambiguous, generic, or has no text, YOU MUST KEEP IT. 
+ONLY discard a post if the text explicitly proves it is entirely irrelevant (e.g., a clear personal photo, an ad for something unrelated, a meme, etc.).
+When in doubt, KEEP the post.
+
+Respond with ONLY a valid JSON array of the IDs you decided to KEEP, like:
 ["id1", "id2"]
 If none match, respond with: []"""
 
@@ -58,11 +62,17 @@ If none match, respond with: []"""
 
                 accepted_ids = json.loads(clean_text)
                 if isinstance(accepted_ids, list):
-                    for aid in accepted_ids:
-                        matching_ids.add(str(aid))
+                    return [str(aid) for aid in accepted_ids]
             except Exception as e:
                 logger.warning("Batch filter failed on chunk (%s). Defaulting to include all chunk items.", e)
-                for p in chunk:
-                    matching_ids.add(p["id"])
+                return [p["id"] for p in chunk]
+            return []
+
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        with ThreadPoolExecutor(max_workers=min(5, len(chunks))) as executor:
+            futures = [executor.submit(process_chunk, chunk) for chunk in chunks]
+            for future in as_completed(futures):
+                for aid in future.result():
+                    matching_ids.add(aid)
 
         return matching_ids

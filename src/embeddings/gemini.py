@@ -1,4 +1,4 @@
-﻿import logging
+import logging
 import os
 import time
 from typing import List, Optional
@@ -15,10 +15,31 @@ EMBEDDING_DIM = 3072
 
 class GeminiEmbeddingProvider:
     def __init__(self, api_key: Optional[str] = None):
-        key = api_key or os.getenv("GEMINI_API_KEY")
-        if not key:
-            raise ValueError("GEMINI_API_KEY environment variable is not set.")
-        self.client = genai.Client(api_key=key)
+        self.api_keys: List[str] = []
+        if api_key:
+            self.api_keys = [k.strip() for k in api_key.split(",") if k.strip()]
+        else:
+            keys_str = os.getenv("GEMINI_API_KEYS")
+            if keys_str:
+                self.api_keys = [k.strip() for k in keys_str.split(",") if k.strip()]
+            else:
+                key = os.getenv("GEMINI_API_KEY")
+                if key:
+                    self.api_keys = [k.strip() for k in key.split(",") if k.strip()]
+
+        if not self.api_keys:
+            raise ValueError("GEMINI_API_KEY or GEMINI_API_KEYS environment variable is not set.")
+
+        self.clients = [genai.Client(api_key=k) for k in self.api_keys]
+        self._client_index = 0
+
+    @property
+    def client(self) -> genai.Client:
+        return self.clients[self._client_index]
+
+    def _rotate_client(self) -> genai.Client:
+        self._client_index = (self._client_index + 1) % len(self.clients)
+        return self.clients[self._client_index]
 
     @property
     def name(self) -> str:
@@ -39,12 +60,18 @@ class GeminiEmbeddingProvider:
                     res = self.client.models.embed_content(
                         model=EMBEDDING_MODEL,
                         contents=texts,
-                        config=genai.types.EmbedContentConfig(task_type=t_type),
+                        config=genai.types.EmbedContentConfig(
+                            task_type=t_type,
+                            output_dimensionality=EMBEDDING_DIM,
+                        ),
                     )
                 return [embedding.values for embedding in res.embeddings]
             except Exception as e:
                 err_str = str(e)
                 if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "Quota" in err_str:
+                    if len(self.clients) > 1:
+                        self._rotate_client()
+                        logger.info("Rotated to next Gemini API key for embeddings after 429.")
                     wait_time = (attempt + 1) * 3
                     logger.warning("Gemini embedding rate limit hit; retrying in %ds (attempt %d/4)...", wait_time, attempt + 1)
                     time.sleep(wait_time)

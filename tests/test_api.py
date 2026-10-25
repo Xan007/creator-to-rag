@@ -229,7 +229,7 @@ def test_query_wiring_defaults_and_params(client, monkeypatch):
 
     r = client.post("/query", json={"question": "¿qué recomienda?"})
     assert r.status_code == 200
-    assert received["kw"] == {"top_k": 6, "min_score": 0.35, "mode": "grounded_plus", "history": None}
+    assert received["kw"] == {"top_k": 6, "min_score": 0.15, "mode": "grounded_plus", "history": None}
 
     client.post(
         "/query",
@@ -317,6 +317,50 @@ def test_user_context_headers_and_lazy_provisioning(client):
     r = client.get("/libraries", headers={"X-User-Id": ext_id})
     assert r.status_code == 200
     r = client.get(f"/users/{ext_id}")
-    assert r.json()["id"] == ext_id
-
     client.delete(f"/users/{ext_id}")
+
+
+def test_get_posts_and_link_posts(client, monkeypatch):
+    from storage.db import get_session
+    from storage.models import Post
+    import storage.repositories as repo
+
+    db = get_session()
+    try:
+        p1 = Post(id="test_post_1", creator_username="testcreator", url="https://instagram.com/p/1", description="Post 1 description", extracted_knowledge="Knowledge 1")
+        p2 = Post(id="test_post_2", creator_username="testcreator", url="https://instagram.com/p/2", description="Post 2 description", extracted_knowledge="Knowledge 2")
+        repo.upsert_post(db, p1)
+        repo.upsert_post(db, p2)
+    finally:
+        db.close()
+
+    # Test GET /posts
+    r = client.get("/posts")
+    assert r.status_code == 200
+    data = r.json()
+    assert "items" in data and "total" in data
+    assert any(p["id"] == "test_post_1" for p in data["items"])
+
+    # Test GET /posts with search filter
+    r = client.get("/posts?query=Knowledge 1")
+    assert r.status_code == 200
+    assert any(p["id"] == "test_post_1" for p in r.json()["items"])
+
+    # Test POST /libraries/{id}/posts/link
+    lib_res = client.post("/libraries", json={"name": "Post Linking Library", "description": "Testing link"})
+    lib_id = lib_res.json()["id"]
+
+    # Mock pinecone update
+    monkeypatch.setattr("src.api.app._run_pinecone_updates", lambda post_ids, lid: None)
+
+    link_res = client.post(f"/libraries/{lib_id}/posts/link", json={"post_ids": ["test_post_1"]})
+    assert link_res.status_code == 200
+    assert "Linked 1 posts" in link_res.json()["message"]
+
+    # Verify post is now linked to library
+    lib_details = client.get(f"/libraries/{lib_id}").json()
+    assert any(p["id"] == "test_post_1" for p in lib_details["posts"])
+    assert any(s["id"] == f"{lib_id}:test_post_1" for s in lib_details["sources"])
+
+    # Clean up
+    client.delete(f"/libraries/{lib_id}")

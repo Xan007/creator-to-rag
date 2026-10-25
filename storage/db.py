@@ -37,6 +37,7 @@ def get_engine():
         engine_kwargs = {}
         if url.startswith("sqlite"):
             connect_args["check_same_thread"] = False
+            connect_args["timeout"] = 30
             if url in ("sqlite://", "sqlite:///:memory:"):
                 engine_kwargs["poolclass"] = StaticPool
             else:

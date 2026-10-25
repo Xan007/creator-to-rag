@@ -1,4 +1,4 @@
-﻿import logging
+import logging
 import os
 from typing import Dict, List, Optional
 from src.embeddings.base import BaseEmbeddingProvider
@@ -21,7 +21,7 @@ class FallbackEmbeddingProvider:
         # Try configuring primary first
         if self.primary_name == "jina" and os.getenv("JINA_API_KEY"):
             providers.append(JinaEmbeddingProvider())
-        elif self.primary_name == "gemini" and os.getenv("GEMINI_API_KEY"):
+        elif self.primary_name == "gemini" and (os.getenv("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEYS")):
             providers.append(GeminiEmbeddingProvider())
         elif self.primary_name == "fastembed":
             providers.append(FastEmbedProvider())
@@ -30,7 +30,7 @@ class FallbackEmbeddingProvider:
         if os.getenv("JINA_API_KEY") and not any(p.name == "jina" for p in providers):
             providers.append(JinaEmbeddingProvider())
 
-        if os.getenv("GEMINI_API_KEY") and not any(p.name == "gemini" for p in providers):
+        if (os.getenv("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEYS")) and not any(p.name == "gemini" for p in providers):
             providers.append(GeminiEmbeddingProvider())
 
         if not any(p.name == "fastembed" for p in providers):
@@ -72,7 +72,7 @@ class EmbeddingFactory:
         if requested == "auto":
             if os.getenv("JINA_API_KEY"):
                 requested = "jina"
-            elif os.getenv("GEMINI_API_KEY"):
+            elif os.getenv("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEYS"):
                 requested = "gemini"
             else:
                 requested = "fastembed"
@@ -81,8 +81,8 @@ class EmbeddingFactory:
                 raise RuntimeError("EMBED_PROVIDER=jina requires JINA_API_KEY.")
             return JinaEmbeddingProvider()
         if requested == "gemini":
-            if not os.getenv("GEMINI_API_KEY"):
-                raise RuntimeError("EMBED_PROVIDER=gemini requires GEMINI_API_KEY.")
+            if not os.getenv("GEMINI_API_KEY") and not os.getenv("GEMINI_API_KEYS"):
+                raise RuntimeError("EMBED_PROVIDER=gemini requires GEMINI_API_KEY or GEMINI_API_KEYS.")
             return GeminiEmbeddingProvider()
         if requested == "fastembed":
             return FastEmbedProvider()

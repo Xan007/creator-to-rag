@@ -4,7 +4,6 @@ import time
 import hashlib
 from typing import Any, Dict, List, Optional
 
-from google import genai
 from pinecone import Pinecone, ServerlessSpec
 from config.env import getenv, load_runtime_env
 
@@ -13,8 +12,6 @@ load_runtime_env()
 logger = logging.getLogger(__name__)
 
 INDEX_NAME = getenv("PINECONE_INDEX", "creatorrag")
-EMBEDDING_MODEL = "gemini-embedding-001"
-EMBEDDING_DIM = 3072
 MAX_CAPTION_CHARS = 1000
 MAX_KNOWLEDGE_CHARS = 8000
 CHUNK_VERSION = "v2"
@@ -77,7 +74,7 @@ class PineconeIndexer:
         return [self._get_embedding(text, task_type=task_type) for text in texts]
 
 
-    def index_post(
+    def prepare_post_index(
         self,
         post_id: str,
         url: str,
@@ -87,12 +84,24 @@ class PineconeIndexer:
         extracted_text: str,
         library_id: Optional[str] = None,
         ingest_status: str = "full_indexed",
-    ) -> None:
+        published_at: Optional[float] = None,
+    ) -> Dict[str, Any]:
         from storage.db import get_session
         from storage.models import Chunk, Post, Source
         import storage.repositories as repo
+        from src.analyzer.title_generator import extract_topic_from_knowledge
 
         indexed_at = time.time()
+
+        # Derive title from ## Topic in extraction output — zero extra LLM call.
+        # Falls back to first caption line for caption-only posts.
+        post_title = extract_topic_from_knowledge(extracted_text)
+        if not post_title:
+            for line in (description or "").splitlines():
+                stripped = line.strip()
+                if stripped:
+                    post_title = stripped[:120]
+                    break
 
         db = get_session()
         try:
@@ -101,8 +110,10 @@ class PineconeIndexer:
                 url=url,
                 creator_username=creator_username,
                 type=post_type,
+                title=post_title,
                 description=description,
                 extracted_knowledge=extracted_text,
+                published_at=published_at,
                 indexed_at=indexed_at,
                 library_id=library_id,
                 source_id=f"{library_id}:{post_id}" if library_id else None,
@@ -119,11 +130,12 @@ class PineconeIndexer:
                         content_type=post_type.lower(),
                         url=url,
                         author=creator_username,
-                        title=description.splitlines()[0][:200] if description else "",
+                        title=post_title,
                         description=description,
                         extracted_text=extracted_text,
                         status="indexed",
                         ingest_status=ingest_status,
+                        published_at=published_at,
                         indexed_at=indexed_at,
                     ),
                 )
@@ -147,6 +159,7 @@ class PineconeIndexer:
         finally:
             db.close()
 
+
         embed_input = (
             f"Creator: @{creator_username}\n"
             f"URL: {url}\n"
@@ -167,6 +180,8 @@ class PineconeIndexer:
             "original_description": description[:MAX_CAPTION_CHARS],
             "extracted_knowledge": extracted_text[:MAX_KNOWLEDGE_CHARS],
             "ingest_status": ingest_status,
+            "library_id": library_id or "",
+            "source_id": f"{library_id}:{post_id}" if library_id else post_id,
         }
         if library_id:
             meta.update({
@@ -174,10 +189,25 @@ class PineconeIndexer:
                 "source_id": f"{library_id}:{post_id}",
                 "platform": "instagram",
                 "author": creator_username,
-                "title": description.splitlines()[0][:200] if description else "",
+                "title": post_title,
             })
-        self.index.upsert(vectors=[{"id": vector_id, "values": vector_values, "metadata": meta}])
-        logger.info("Indexed post %s (@%s) -> Pinecone + DB", post_id, creator_username)
+        return {"id": vector_id, "values": vector_values, "metadata": meta}
+
+
+    def index_post(self, *args, **kwargs) -> None:
+        vector = self.prepare_post_index(*args, **kwargs)
+        self.index.upsert(vectors=[vector])
+        logger.info("Indexed post -> Pinecone + DB")
+        
+    def batch_upsert(self, vectors: List[Dict[str, Any]]) -> None:
+        if not vectors:
+            return
+        # Pinecone allows upserting up to 1000 vectors at a time
+        batch_size = 100
+        for i in range(0, len(vectors), batch_size):
+            batch = vectors[i:i + batch_size]
+            self.index.upsert(vectors=batch)
+            logger.info(f"Batch upserted {len(batch)} vectors to Pinecone")
 
     def index_source(
         self,
@@ -202,6 +232,7 @@ class PineconeIndexer:
         db = get_session()
         try:
             old_rows = db.query(Chunk).filter(Chunk.source_id == source_id).all()
+            old_ordinals = [row.ordinal for row in old_rows]
             source = repo.upsert_source(
                 db,
                 Source(
@@ -276,9 +307,9 @@ class PineconeIndexer:
             self.index.upsert(vectors=vectors)
             current_ids = {vector["id"] for vector in vectors}
             stale_ids = [
-                f"source:{library_id}:{source_id}:{row.ordinal}"
-                for row in old_rows
-                if f"source:{library_id}:{source_id}:{row.ordinal}" not in current_ids
+                f"source:{library_id}:{source_id}:{ordinal}"
+                for ordinal in old_ordinals
+                if f"source:{library_id}:{source_id}:{ordinal}" not in current_ids
             ]
             if stale_ids:
                 self.index.delete(ids=stale_ids)
@@ -300,8 +331,117 @@ class PineconeIndexer:
         logger.info("Indexed source %s in %d chunk(s)", source_id, len(vectors))
         return len(vectors)
 
-    def delete_post(self, post_id: str, creator_username: str = "") -> None:
-        vector_id = f"{creator_username}_{post_id}" if creator_username else post_id
-        self.index.delete(ids=[vector_id])
-        logger.info("Deleted vector %s from Pinecone", vector_id)
+    def delete_post(self, post_id: str, creator_username: str = "", library_id: Optional[str] = None) -> None:
+        ids_to_delete = []
+        if library_id:
+            ids_to_delete.append(f"{library_id}:{creator_username}_{post_id}" if creator_username else f"{library_id}:{post_id}")
+        if creator_username:
+            ids_to_delete.append(f"{creator_username}_{post_id}")
+        ids_to_delete.append(post_id)
+        try:
+            self.index.delete(ids=ids_to_delete)
+            logger.info("Deleted vector IDs %s from Pinecone", ids_to_delete)
+        except Exception as e:
+            logger.warning("Could not delete vector IDs %s: %s", ids_to_delete, e)
+        try:
+            filter_dict: Dict[str, Any] = {"post_id": post_id}
+            if library_id:
+                filter_dict["library_id"] = library_id
+            self.index.delete(filter=filter_dict)
+        except Exception:
+            pass
+
+    def delete_posts(self, post_ids: List[str], library_id: Optional[str] = None) -> None:
+        if not post_ids:
+            return
+        try:
+            filter_dict: Dict[str, Any] = {"post_id": {"$in": post_ids}}
+            if library_id:
+                filter_dict["library_id"] = library_id
+            self.index.delete(filter=filter_dict)
+            logger.info("Deleted vectors for %d posts from Pinecone", len(post_ids))
+        except Exception as e:
+            logger.warning("Failed to delete vectors by post_ids filter: %s", e)
+
+    def delete_library(self, library_id: str) -> None:
+        try:
+            self.index.delete(filter={"library_id": library_id})
+            logger.info("Deleted all vectors for library %s from Pinecone", library_id)
+        except Exception as e:
+            logger.warning("Failed to delete vectors for library %s from Pinecone: %s", library_id, e)
+
+    def delete_source(self, source_id: str, library_id: Optional[str] = None) -> None:
+        try:
+            filter_dict: Dict[str, Any] = {"source_id": source_id}
+            if library_id:
+                filter_dict["library_id"] = library_id
+            self.index.delete(filter=filter_dict)
+            logger.info("Deleted vectors for source %s from Pinecone", source_id)
+        except Exception as e:
+            logger.warning("Failed to delete vectors for source %s: %s", source_id, e)
+
+    def update_posts_library(
+        self,
+        post_ids: List[str],
+        library_id: str,
+        id_creator_map: Optional[Dict[str, str]] = None,
+    ) -> None:
+        """
+        Updates the library_id metadata for existing post vectors in Pinecone.
+
+        Tries all known vector ID patterns deterministically:
+          - {post_id}
+          - {creator}_{post_id}              (legacy pipeline format)
+          - {old_lib}:{creator}_{post_id}    (library pipeline format)
+          - source:{old_lib}:{source_id}:N   (chunk vectors)
+
+        Skips the unreliable dummy-vector ANN query.
+        """
+        if not post_ids:
+            return
+
+        if id_creator_map is None:
+            from storage.db import get_session
+            from storage.models import Post
+            db = get_session()
+            try:
+                rows = db.query(Post.id, Post.creator_username).filter(Post.id.in_(post_ids)).all()
+                id_creator_map = {r[0]: (r[1] or "") for r in rows}
+            except Exception as e:
+                logger.warning("Failed to lookup creators for Pinecone update: %s", e)
+                id_creator_map = {}
+            finally:
+                db.close()
+
+        def _update_chunk(post_ids_chunk: List[str]) -> None:
+            for pid in post_ids_chunk:
+                creator = id_creator_map.get(pid, "")
+                # All known vector ID patterns for this post
+                candidate_ids = [pid]
+                if creator:
+                    candidate_ids.append(f"{creator}_{pid}")
+                # Try with common legacy library slugs too
+                for slug in ("mi-biblioteca",):
+                    if creator:
+                        candidate_ids.append(f"{slug}:{creator}_{pid}")
+                    candidate_ids.append(f"{slug}:{pid}")
+
+                for vid in candidate_ids:
+                    try:
+                        self.index.update(id=vid, set_metadata={"library_id": library_id})
+                    except Exception:
+                        pass  # Vector doesn't exist under this ID pattern — expected
+
+        import concurrent.futures
+        batch_size = 50
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            futures = [
+                executor.submit(_update_chunk, post_ids[i:i + batch_size])
+                for i in range(0, len(post_ids), batch_size)
+            ]
+            for f in concurrent.futures.as_completed(futures):
+                try:
+                    f.result()
+                except Exception as exc:
+                    logger.error("Pinecone update batch failed: %s", exc)
 

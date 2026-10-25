@@ -1,3 +1,4 @@
+from functools import lru_cache
 from typing import Any, Dict, List, Optional
 _ENGINE = None
 
@@ -8,6 +9,12 @@ def _get_query_engine():
         from src.rag.query_engine import QueryEngine
         _ENGINE = QueryEngine()
     return _ENGINE
+
+
+@lru_cache(maxsize=1)
+def _get_public_query_engine():
+    from src.rag.query_engine import QueryEngine
+    return QueryEngine(allow_hydration=False)
 
 
 def query_knowledge(
@@ -22,6 +29,7 @@ def query_knowledge(
     history: Optional[List[Dict[str, Any]]] = None,
     artifact_type: Optional[str] = None,
     export_path: Optional[str] = None,
+    allow_hydration: bool = True,
 ) -> Dict[str, Any]:
     from src.agent.intent import ArtifactIntentDetector
     from src.agent.delegator import AgentArtifactDelegator
@@ -42,7 +50,7 @@ def query_knowledge(
         explicit_export=export_path,
     )
 
-    engine = _get_query_engine()
+    engine = _get_query_engine() if allow_hydration else _get_public_query_engine()
     result = engine.query(
         question=question,
         creator=creator,

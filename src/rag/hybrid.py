@@ -2,10 +2,11 @@ import logging
 import re
 from typing import Any, Dict, List, Optional
 from rank_bm25 import BM25Okapi
+from src.rag.lexical import _STOPWORDS
 
 logger = logging.getLogger(__name__)
 
-_WORD_RE = re.compile(r"\w+", re.UNICODE)
+_WORD_RE = re.compile(r"[\wÀ-ÿ]+", re.UNICODE)
 
 
 def tokenize(text: str) -> List[str]:
@@ -89,9 +90,9 @@ class HybridRetriever:
                 query_terms = set(tokenized_query)
                 scored_docs = [
                     (
-                valid_docs[i]["metadata"].get("post_id")
-                or valid_docs[i]["metadata"].get("chunk_id")
-                or valid_docs[i]["id"],
+                        valid_docs[i]["metadata"].get("post_id")
+                        or valid_docs[i]["metadata"].get("chunk_id")
+                        or valid_docs[i]["id"],
                         float(len(query_terms.intersection(set(tokens)))),
                     )
                     for i, tokens in enumerate(tokenized_corpus)
@@ -115,13 +116,44 @@ class HybridRetriever:
         for rank, doc_id in enumerate(bm25_ranked_ids):
             rrf_scores[doc_id] = rrf_scores.get(doc_id, 0.0) + (1.0 / (self.rrf_k + (rank + 1)))
 
-        sorted_doc_ids = sorted(rrf_scores.keys(), key=lambda did: rrf_scores[did], reverse=True)
+        query_keywords = [
+            w for w in tokenize(query)
+            if w not in _STOPWORDS and len(w) >= 3
+        ]
+
+        boosted_scores: Dict[str, float] = {}
+        for did, base_score in rrf_scores.items():
+            doc = doc_by_id.get(did, {})
+            meta = doc.get("metadata", {})
+            title = (meta.get("title") or "").lower()
+            text = (meta.get("extracted_knowledge") or meta.get("original_description") or "").lower()
+
+            multiplier = 1.0
+            if query_keywords:
+                title_matches = sum(1 for term in query_keywords if term in title)
+                text_matches = sum(1 for term in query_keywords if term in text)
+
+                # Strong boost for title / topic keyword match
+                if title_matches > 0:
+                    multiplier += (0.6 * title_matches)
+
+                # Bonus when both dense and lexical retrieved this document
+                if did in dense_ranked_ids and did in bm25_ranked_ids:
+                    multiplier += 0.35
+
+                # Demote documents that do not match ANY query keywords
+                if title_matches == 0 and text_matches == 0:
+                    multiplier *= 0.45
+
+            boosted_scores[did] = base_score * multiplier
+
+        sorted_doc_ids = sorted(boosted_scores.keys(), key=lambda did: boosted_scores[did], reverse=True)
 
         final_matches: List[Dict[str, Any]] = []
         for did in sorted_doc_ids[:top_k]:
             doc = doc_by_id.get(did)
             if doc:
-                normalized_score = min(1.0, rrf_scores[did] * 30.0)
+                normalized_score = min(1.0, boosted_scores[did] * 30.0)
                 final_matches.append({
                     "id": doc.get("id", did),
                     "score": normalized_score,

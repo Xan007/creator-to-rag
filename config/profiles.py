@@ -11,6 +11,7 @@ class ProfileConfig:
     analysis_mode: str = "gemini"
     audio_only: bool = False
     failed_ids: List[str] = field(default_factory=list)
+    total_posts_scraped: int = 0
     last_scraped_at: Optional[float] = None
     last_run_at: Optional[str] = None
 
@@ -38,6 +39,7 @@ def _to_model(profile: ProfileConfig):
         analysis_mode=profile.analysis_mode,
         audio_only=profile.audio_only,
         failed_ids=profile.failed_ids,
+        total_posts_scraped=profile.total_posts_scraped,
         last_scraped_at=profile.last_scraped_at,
         last_run_at=profile.last_run_at,
     )
@@ -52,6 +54,7 @@ def _from_model(model) -> ProfileConfig:
         analysis_mode=model.analysis_mode or "gemini",
         audio_only=bool(model.audio_only),
         failed_ids=list(model.failed_ids or []),
+        total_posts_scraped=getattr(model, "total_posts_scraped", 0) or 0,
         last_scraped_at=getattr(model, "last_scraped_at", None),
         last_run_at=getattr(model, "last_run_at", None),
     )
@@ -90,3 +93,9 @@ def delete_profile(username: str) -> bool:
     finally:
         db.close()
 
+
+# Compatibility aliases for legacy IGProfileInfo callers
+IGProfileInfo = ProfileConfig
+load_ig_profile = load_profile
+save_ig_profile = save_profile
+delete_ig_profile = delete_profile
